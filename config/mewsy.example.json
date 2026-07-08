@@ -1,0 +1,54 @@
+{
+  "mews": {
+    "baseUrl": "https://api.mews-demo.com",
+    "clientTokenEnv": "MEWS_CLIENT_TOKEN",
+    "clientName": "Mewsy 0.1.0"
+  },
+  "alerts": {
+    "webhookUrlEnv": "MEWSY_ALERT_WEBHOOK"
+  },
+  "defaults": {
+    "timezone": "Europe/Dublin",
+    "endOfDay": "00:00",
+    "postingDelayDays": null,
+    "maxCatchupDays": 31,
+    "roundingToleranceCents": 2,
+    "vatWarnToleranceCents": 2,
+    "requireAdjustmentApproval": true,
+    "adjustmentDating": "detection",
+    "ledgerCodeField": "LedgerAccountCode",
+    "journalRetries": 0,
+    "exemptSageTaxCode": 9,
+    "taxCodeMap": {
+      "IE-R1": { "sageTaxCode": 3, "ratePercent": 13.5, "label": "Accommodation 13.5% (VERIFY Mews code + Sage code in Phase 0)" },
+      "IE-R2": { "sageTaxCode": 5, "ratePercent": 9, "label": "Restaurant/catering food 9% from 1 Jul 2026 (VERIFY)" },
+      "IE-S": { "sageTaxCode": 1, "ratePercent": 23, "label": "Standard 23% — alcohol/soft drinks (VERIFY)" },
+      "IE-Z": { "sageTaxCode": 0, "ratePercent": 0, "label": "Zero-rated (VERIFY)" },
+      "IE-E": { "sageTaxCode": 2, "ratePercent": 0, "label": "Exempt (VERIFY)" }
+    },
+    "clearing": {
+      "accountRef": "1200",
+      "defaultNominal": "1200",
+      "byTender": {
+        "CreditCard": "1200",
+        "Cash": "1210",
+        "BankTransfer": "1200",
+        "Invoice": "1100"
+      }
+    },
+    "suspenseNominal": "2205",
+    "deptFromCostCenter": false
+  },
+  "properties": [
+    {
+      "code": "PROP1",
+      "name": "Example Hotel Dublin",
+      "mewsAccessTokenEnv": "MEWS_ACCESS_TOKEN_PROP1",
+      "startDate": "2026-07-01",
+      "hyperAccounts": {
+        "baseUrl": "http://localhost:5000",
+        "authTokenEnv": "HYPERACCOUNTS_TOKEN_PROP1"
+      }
+    }
+  ]
+}

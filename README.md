@@ -1,5 +1,7 @@
 # Mewsy
 
+[![CI](https://github.com/zeroco84/mewsy/actions/workflows/ci.yml/badge.svg)](https://github.com/zeroco84/mewsy/actions/workflows/ci.yml)
+
 **Mews → Sage 50 Revenue Integration Service** — *"Mews Entries, Wired to Sage for You"*
 
 Implements an internal build specification (v0.1, 8 July 2026 — not distributed with this repository): each day, once a business date has aged past the Mews editable-history window, Mewsy pulls the finalised **Closed** accounting figures for each property, builds **one balanced journal** (revenue + payments + Irish VAT, by nominal), posts it to Sage 50 via the HyperAccounts `POST /api/journal` endpoint, and reconciles the result back against Mews — with idempotency, adjustment handling, an append-only audit log and alerting.

@@ -120,7 +120,7 @@ Built against the documented Connector API shapes from general knowledge; the sp
 - **O1 — Alert channel.** Currently structured logs + optional JSON webhook (`MEWSY_ALERT_WEBHOOK`; the payload carries a `text` field so Slack/Teams incoming webhooks render it as-is, plus structured fields). Email/PagerDuty not built. Decide the real channel and who's on it; a daily run with exit code ≠ 0 should page someone.
 - **O2 — Where exactly it runs** (spec §3: on/alongside the Sage box in AWS), the service account, and that `data/` (SQLite ledger + audit + reports) is on **backed-up** disk — it is the idempotency memory; losing it means every date re-checks against Sage by hand.
 - **O3 — Data retention** for audit log and reports (holds full journal payloads; likely 7 years for Irish accounting records).
-- **O4 — Repo/CI.** Built as a plain directory (not a git repo). Init git, add CI (`npm test` + `tsc`) when adopting.
+- **O4 — Repo/CI.** Published at github.com/zeroco84/mewsy; GitHub Actions CI (`.github/workflows/ci.yml`) builds and runs the test suite on every push and pull request (Node 20, the minimum supported version).
 
 ## 6. Adversarial review round (pre-publication, 8 Jul 2026)
 

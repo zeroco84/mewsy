@@ -5,7 +5,8 @@
     "clientName": "Mewsy 0.1.0"
   },
   "alerts": {
-    "webhookUrlEnv": "MEWSY_ALERT_WEBHOOK"
+    "webhookUrlEnv": "MEWSY_ALERT_WEBHOOK",
+    "heartbeatUrlEnv": "MEWSY_HEARTBEAT_URL"
   },
   "defaults": {
     "timezone": "Europe/Dublin",
@@ -14,6 +15,9 @@
     "maxCatchupDays": 31,
     "roundingToleranceCents": 2,
     "vatWarnToleranceCents": 2,
+    "vatMismatchPolicy": "block",
+    "suspenseMaterialityCents": 50000,
+    "suspenseMaterialityPercent": 2,
     "requireAdjustmentApproval": true,
     "adjustmentDating": "detection",
     "ledgerCodeField": "LedgerAccountCode",
@@ -47,7 +51,12 @@
       "startDate": "2026-07-01",
       "hyperAccounts": {
         "baseUrl": "http://localhost:5000",
-        "authTokenEnv": "HYPERACCOUNTS_TOKEN_PROP1"
+        "authTokenEnv": "HYPERACCOUNTS_TOKEN_PROP1",
+        "readback": {
+          "enabled": true,
+          "invRefField": "invRef",
+          "compareSplits": true
+        }
       }
     }
   ]

@@ -2,6 +2,8 @@
 
 The spec (v0.1) was implemented as faithfully as possible. Where it was silent, a decision had to be made; where it depends on external systems that couldn't be reached from a build environment, there is a gap to verify. This file records all of them. Items marked **Phase 0** should be settled before any real posting.
 
+> **Context update (8 Jul 2026) — go-live is February 2027.** A full response to this document, including answers from the HyperAccounts vendor API reference, is preserved verbatim at [docs/DECISIONS-RESPONSE.md](docs/DECISIONS-RESPONSE.md); §8 below tracks the resulting status of every item. The headline consequences: nothing posts to Sage before Feb 2027; **tax rates/codes are go-live configuration, not build configuration** (re-verify Irish VAT rates in the pre-opening window — do not assume July 2026 rates); no historical backfill is needed (the watermark starts at the first trading day); and because deposits for Feb 2027 stays are collected during 2026, **deposits/deferred revenue (F5) is mandatory before Phase 2**, not optional. Sequencing to go-live lives in the response §5. Operational setup is in [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
 ---
 
 ## 1. Decisions made while building (review & confirm)
@@ -117,7 +119,7 @@ Built against the documented Connector API shapes from general knowledge; the sp
 
 ## 5. Ops decisions
 
-- **O1 — Alert channel.** Currently structured logs + optional JSON webhook (`MEWSY_ALERT_WEBHOOK`; the payload carries a `text` field so Slack/Teams incoming webhooks render it as-is, plus structured fields). Email/PagerDuty not built. Decide the real channel and who's on it; a daily run with exit code ≠ 0 should page someone.
+- **O1 — Alert channel (updated 8 Jul).** Structured logs + JSON webhook (`MEWSY_ALERT_WEBHOOK`) carrying `severity`, `alertType`, `propertyCode`, `businessDate`, `ledgerRowId` and the literal `remediation` command, plus a `text` field (renders in Slack as-is). **Teams incoming webhooks were retired May 2026** — use the Teams Workflows app (Power Automate) triggered by "When a Teams webhook request is received"; rendering belongs in the flow. A **heartbeat/dead-man's switch** is built: every completed run pings `MEWSY_HEARTBEAT_URL` (`…/fail` on a problem run); pair it with an external missing-ping monitor so a dead box can never look healthy. Route `error` severity to a named on-call person (to be named before go-live). See [docs/OPERATIONS.md](docs/OPERATIONS.md).
 - **O2 — Where exactly it runs** (spec §3: on/alongside the Sage box in AWS), the service account, and that `data/` (SQLite ledger + audit + reports) is on **backed-up** disk — it is the idempotency memory; losing it means every date re-checks against Sage by hand.
 - **O3 — Data retention** for audit log and reports (holds full journal payloads; likely 7 years for Irish accounting records).
 - **O4 — Repo/CI.** Published at github.com/zeroco84/mewsy; GitHub Actions CI (`.github/workflows/ci.yml`) builds and runs the test suite on every push and pull request (Node 20, the minimum supported version).
@@ -136,8 +138,37 @@ A multi-agent adversarial review (6 parallel finders over functional dimensions,
 
 ## 7. Known simplifications (acceptable for Phase 0/1, revisit later)
 
-- `mewsy validate` can't verify nominal codes exist in the Sage chart of accounts (needs a HyperAccounts lookup endpoint — G3/G7); the first rejected journal will surface a bad code instead.
-- Reconciliation trusts the local posting ledger as the record of "what's in Sage" (D8/G3).
+- `mewsy validate` can't yet verify nominal codes exist in the Sage chart of accounts; the first rejected journal surfaces a bad code instead. (The vendor's search API may allow a nominal-ledger lookup — worth checking while confirming G4/G5.)
 - The Mews `Currency` filter is not sent on getAll calls (EUR is asserted per item instead).
-- No concurrency guard: don't run two `mewsy run` processes against the same DB simultaneously (SQLite WAL makes it *unlikely* to corrupt, but the ledger check-then-post isn't atomic across processes). Single scheduled run = fine.
-- Timestamps in ledger/audit use the host clock (`new Date()`); the Sage box should run NTP.
+- Sage-side split comparison uses per-nominal sums of absolute net/tax (sign conventions of `AUDIT_SPLIT` unverified); rows without the expected fields degrade to header-presence verification.
+- Timestamps in ledger/audit use the host clock (`new Date()`); the Sage box should run NTP (see docs/OPERATIONS.md).
+
+## 8. Status after the 8 Jul 2026 response ([docs/DECISIONS-RESPONSE.md](docs/DECISIONS-RESPONSE.md))
+
+**Implemented in code from the response:**
+
+- **G1 CLOSED** — `/api/journal` returns `{success, code, response, message}` with **no transaction number**; the client matches on `success`/`code` (never the message — vendor typos are load-bearing), treats 2xx+`success:false` as a definite rejection, and `tranNumber` is sourced from the audit-header read-back.
+- **G3 CLOSED** — `findJournalByInvRef` / `searchAuditHeaders` / `searchSplits` implemented. Ambiguous post outcomes now auto-resolve (found ⇒ POSTED with `tranNumber`; absent ⇒ safe retry; **freeze only if the search itself is unavailable**), and reconciliation verifies presence + split totals **in Sage**, not just the local ledger. One residual check: confirm the searchable column name on the instance (`hyperAccounts.readback.invRefField`, default `invRef`, possibly `INV_REF`).
+- **G6 CLOSED** — `splits[].details` truncates at the documented **30** chars (was 60). `deptNumber` max 2 confirmed → **F12 constraint: Sage departments > 99 cannot be set via journal**.
+- **D4 amended** — UNKNOWN freezing is now the fallback, not the norm, per the read-back above.
+- **D7 amended** — materiality block added: `suspenseMaterialityCents` / `suspenseMaterialityPercent` (either breached ⇒ the date blocks instead of posting suspense). Values are finance's F8 call.
+- **D15 amended** — `vatMismatchPolicy` defaults to **`block`** while the tax mapping is being established (exactly the pre-opening period); relax to `warn` per property once trusted.
+- **D8 upgraded** — reconciliation is now Sage-verifying (see G3).
+- **O-items** — lockfile added on mutating commands (`<db>.lock`, stale-safe); heartbeat + Teams Workflows alert payload (see O1); retention target ~6–7 years, confirm with finance.
+
+**Confirmed as built (no change):** D1, D2, D5 (keep approval through parallel run), D6 (detection-dating; finance to confirm VAT treatment of prior-period adjustments on the next VAT3), D9, D10, D11 (non-EUR block is policy — Sage itself supports FX), D12, D13, D14, D16, and D3 with the schedule fixed at **04:00 `Europe/Dublin`** (see docs/OPERATIONS.md).
+
+**Downgraded:** G2 (duplicate `invRef` behaviour) is a footnote now that check-then-post exists — still worth observing once on the real instance.
+
+**Still open, in sequence order:**
+
+| Item | What | When |
+|---|---|---|
+| G8 | VAT-return mechanism spike (`mewsy vat-spike`) — **do this first**; a failure forces a posting-path redesign | Now |
+| G4 | Confirm AuthToken header (very likely), port, http/https on the instance | Now |
+| G5 | One HyperAccounts per Sage company? Ask the vendor; not blocking (single property at go-live) | Now |
+| G9/G11/G13/G14 | Mews endpoint/filter/tax-code/tender verification against a demo enterprise | Now |
+| G12/F5/F10 | Deposits: deferred-revenue + debtors nominals so suspense only holds the unexplained — **decide before Phase 2**; size via deposit-heavy Phase 1 dry-runs | Urgent |
+| D4a | Stand up the Teams Workflows endpoint + external heartbeat monitor | Now |
+| F1–F4, F7–F9, F11 | Finance configuration incl. **re-verified** Irish VAT rates, COA designed together with Mews categories | Pre-opening (Dec 2026 → Feb 2027) |
+| G10/F2 | Populate `taxCodeMap` empirically via `mewsy report`; re-run the VAT spike against the production company | Pre-opening |

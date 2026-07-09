@@ -3,7 +3,7 @@ import type { PropertyConfig } from '../config.js';
 import { buildVatSpikeLines, toHyperAccountsJournal, vatSpikeInvRef, journalContentHash } from '../domain/journal.js';
 import type { Store } from '../store/store.js';
 import { AmbiguousWriteError } from '../util/http.js';
-import type { JournalPosterLike } from './adjustments.js';
+import { lookupTranNumber, resolveAmbiguousOutcome, type SagePoster } from './readback.js';
 
 /**
  * Phase 0 VAT-return spike (spec §9): post one small journal carrying every
@@ -16,7 +16,7 @@ export async function runVatSpike(input: {
   store: Store;
   alert: Alerter;
   runId: string;
-  ha: JournalPosterLike | null; // null = preview only
+  ha: SagePoster | null; // null = preview only
   revenueNominal: string;
   date: string;
   netCentsPerRate: number;
@@ -54,16 +54,18 @@ export async function runVatSpike(input: {
   });
   store.audit(runId, 'VAT_SPIKE_ATTEMPT', { rowId, invRef, payload }, property.code, date);
 
+  const readback = property.hyperAccounts.readback;
   try {
     const result = await input.ha.postJournal(payload);
     if (result.outcome.kind === 'ok') {
-      store.updateLedgerStatus(rowId, 'POSTED', { sageTransactionRef: result.sageTransactionRef, haResponse: result.rawResponse });
-      store.audit(runId, 'POSTED', { rowId, invRef, sageTransactionRef: result.sageTransactionRef }, property.code, date);
+      const tranNumber = await lookupTranNumber(input.ha, invRef, readback);
+      store.updateLedgerStatus(rowId, 'POSTED', { sageTransactionRef: tranNumber, haResponse: result.rawResponse });
+      store.audit(runId, 'POSTED', { rowId, invRef, sageTransactionRef: tranNumber }, property.code, date);
       return {
         posted: true,
         preview,
         message:
-          `Posted ${invRef} (Sage ref ${result.sageTransactionRef ?? 'n/a'}).\n` +
+          `Posted ${invRef} (Sage ref ${tranNumber ?? 'n/a'}).\n` +
           `Now run the Sage 50 (Ireland) VAT3 return and confirm each rate lands in the correct box.\n` +
           (reverse ? '' : `When done, back it out with: mewsy vat-spike --property ${property.code} --revenue-nominal ${revenueNominal} --date ${date} --reverse --yes`),
       };
@@ -74,11 +76,24 @@ export async function runVatSpike(input: {
     return { posted: false, preview, message: `VAT spike not posted: ${detail}` };
   } catch (err) {
     const message = err instanceof AmbiguousWriteError ? err.message : String(err);
-    store.updateLedgerStatus(rowId, 'UNKNOWN', { note: message });
-    store.audit(runId, 'POST_AMBIGUOUS', { rowId, message }, property.code, date);
-    await alert.send('error', 'POST_UNKNOWN', `VAT spike ${invRef} outcome UNKNOWN — verify in Sage, then: mewsy resolve --id ${rowId} --outcome posted|failed`, {
+    const resolution = await resolveAmbiguousOutcome(input.ha, invRef, readback);
+    if (resolution.kind === 'posted') {
+      store.updateLedgerStatus(rowId, 'POSTED', { sageTransactionRef: resolution.tranNumber, note: `Ambiguous outcome (${message}) resolved as POSTED via Sage read-back` });
+      store.audit(runId, 'POST_RECOVERED_VIA_READBACK', { rowId, invRef, tranNumber: resolution.tranNumber }, property.code, date);
+      return { posted: true, preview, message: `Posted ${invRef} (recovered via Sage read-back; Sage ref ${resolution.tranNumber ?? 'n/a'}).` };
+    }
+    if (resolution.kind === 'absent') {
+      store.updateLedgerStatus(rowId, 'FAILED', { note: `Ambiguous outcome (${message}); Sage read-back confirms absent` });
+      store.audit(runId, 'POST_ABSENT_CONFIRMED', { rowId, invRef, message }, property.code, date);
+      return { posted: false, preview, message: `VAT spike not posted (${message}); Sage read-back confirms it is NOT in Sage — safe to re-run.` };
+    }
+    store.updateLedgerStatus(rowId, 'UNKNOWN', { note: `${message}; read-back unavailable: ${resolution.error}` });
+    store.audit(runId, 'POST_AMBIGUOUS', { rowId, message, readback: resolution.error }, property.code, date);
+    await alert.send('error', 'POST_UNKNOWN', `VAT spike ${invRef} outcome UNKNOWN and the Sage read-back is unavailable — verify in Sage, then: mewsy resolve --id ${rowId} --outcome posted|failed`, {
       propertyCode: property.code,
       businessDate: date,
+      ledgerRowId: rowId,
+      remediation: `mewsy resolve --id ${rowId} --outcome posted|failed`,
     });
     return { posted: false, preview, message: `Outcome UNKNOWN — verify in Sage, then resolve row #${rowId}` };
   }

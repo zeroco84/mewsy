@@ -56,7 +56,8 @@ export interface BuildResult {
   warnings: string[];
 }
 
-const DETAILS_MAX = 60;
+// Vendor API reference: splits[].details is max 30 chars (G6).
+const DETAILS_MAX = 30;
 const EXTRA_REF_MAX = 30;
 const INV_REF_MAX = 30;
 const NOMINAL_MAX = 8;
@@ -206,9 +207,14 @@ export function buildDayJournal(input: {
       sageTaxCode = mapping.sageTaxCode;
       const expectedTax = Math.round((netCents * mapping.ratePercent) / 100);
       if (Math.abs(expectedTax - taxCentsTotal) > property.vatWarnToleranceCents) {
-        warnings.push(
-          `${label}: tax ${formatEur(taxCentsTotal)} differs from ${mapping.ratePercent}% of net ${formatEur(netCents)} (expected ~${formatEur(expectedTax)}) — posting Mews figures as-is`,
-        );
+        const description = `${label}: tax ${formatEur(taxCentsTotal)} differs from ${mapping.ratePercent}% of net ${formatEur(netCents)} (expected ~${formatEur(expectedTax)})`;
+        if (property.vatMismatchPolicy === 'block') {
+          // D15 (response §3): a wrong rate in Mews becomes a wrong VAT3 in
+          // Sage — block while the tax mapping is being established.
+          blockers.push(`${description} — blocked by vatMismatchPolicy 'block' (relax to 'warn' once the mapping is trusted)`);
+          continue;
+        }
+        warnings.push(`${description} — posting Mews figures as-is`);
       }
     }
 
@@ -315,20 +321,41 @@ export function buildDayJournal(input: {
   if (imbalanceCents !== 0) {
     const balancing = -imbalanceCents;
     const isRounding = Math.abs(imbalanceCents) <= property.roundingToleranceCents;
-    if (!isRounding) {
-      warnings.push(
-        `Day imbalance ${formatEur(imbalanceCents)} routed to suspense nominal ${property.suspenseNominal} (overpayment / unmatched movement — visible for follow-up, spec §5)`,
+
+    // D7 (response §3): a large suspense line means something upstream broke —
+    // posting it is worse than not posting. Block above materiality.
+    const absImbalance = Math.abs(imbalanceCents);
+    const revenueBase = revenueNetCents + revenueTaxCents;
+    const breachesAbsolute = property.suspenseMaterialityCents !== null && absImbalance > property.suspenseMaterialityCents;
+    const breachesPercent =
+      property.suspenseMaterialityPercent !== null &&
+      revenueBase > 0 &&
+      absImbalance > (revenueBase * property.suspenseMaterialityPercent) / 100;
+    if (!isRounding && (breachesAbsolute || breachesPercent)) {
+      blockers.push(
+        `Day imbalance ${formatEur(imbalanceCents)} exceeds the suspense materiality limit (${[
+          property.suspenseMaterialityCents !== null ? formatEur(property.suspenseMaterialityCents) : null,
+          property.suspenseMaterialityPercent !== null ? `${property.suspenseMaterialityPercent}% of revenue` : null,
+        ]
+          .filter(Boolean)
+          .join(' / ')}) — refusing to post to suspense; investigate upstream (D7)`,
       );
+    } else {
+      if (!isRounding) {
+        warnings.push(
+          `Day imbalance ${formatEur(imbalanceCents)} routed to suspense nominal ${property.suspenseNominal} (overpayment / unmatched movement — visible for follow-up, spec §5)`,
+        );
+      }
+      lines.push({
+        nominalCode: property.suspenseNominal,
+        details: isRounding ? 'Rounding (Mewsy)' : 'Overpayment/suspense (Mewsy)',
+        kind: isRounding ? 'ROUNDING' : 'SUSPENSE',
+        netCents: balancing,
+        taxCents: 0,
+        sageTaxCode: property.exemptSageTaxCode,
+        extraRef: 'MEWSY-BALANCE',
+      });
     }
-    lines.push({
-      nominalCode: property.suspenseNominal,
-      details: isRounding ? 'Rounding (Mewsy)' : 'Overpayment/suspense (Mewsy)',
-      kind: isRounding ? 'ROUNDING' : 'SUSPENSE',
-      netCents: balancing,
-      taxCents: 0,
-      sageTaxCode: property.exemptSageTaxCode,
-      extraRef: 'MEWSY-BALANCE',
-    });
   }
 
   if (blockers.length > 0) {

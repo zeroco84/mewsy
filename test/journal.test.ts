@@ -67,7 +67,7 @@ describe('buildDayJournal — spec §5 worked example', () => {
     expect(pay).toMatchObject({ netAmount: 12834.0, taxAmount: 0, taxCode: 9, type: 15 });
     for (const split of payload.splits) {
       expect(split.nominalCode.length).toBeLessThanOrEqual(8);
-      expect(split.details.length).toBeLessThanOrEqual(60);
+      expect(split.details.length).toBeLessThanOrEqual(30); // vendor limit (G6)
     }
   });
 });
@@ -168,14 +168,55 @@ describe('buildDayJournal — corrections and edge cases', () => {
     expect(nominals).toEqual(['1200', '1210', '1215']);
   });
 
-  it('warns when VAT differs from the mapped rate but still posts Mews figures', () => {
-    const property = makeProperty();
+  it('blocks a material VAT-rate mismatch by default (D15 — mapping not yet trusted)', () => {
+    const property = makeProperty(); // vatMismatchPolicy defaults to 'block'
     const categories = [makeCategory('cat-acc', 'Accommodation', '4000')];
     const orderItems = [makeItem('cat-acc', 100, 'IE-R1', 20)]; // 13.5% of 100 ≠ 20
+    const { journal, blockers } = buildDayJournal({ property, businessDate: DATE, orderItems, payments: [], categoriesById: categoriesById(categories) });
+    expect(journal).toBeNull();
+    expect(blockers.some((b) => b.includes('differs from 13.5%') && b.includes("vatMismatchPolicy 'block'"))).toBe(true);
+  });
+
+  it("warns and posts Mews figures as-is once vatMismatchPolicy is relaxed to 'warn'", () => {
+    const property = makeProperty({ vatMismatchPolicy: 'warn' });
+    const categories = [makeCategory('cat-acc', 'Accommodation', '4000')];
+    const orderItems = [makeItem('cat-acc', 100, 'IE-R1', 20)];
     const { journal, warnings } = buildDayJournal({ property, businessDate: DATE, orderItems, payments: [], categoriesById: categoriesById(categories) });
     expect(journal).not.toBeNull();
     expect(warnings.some((w) => w.includes('differs from 13.5%'))).toBe(true);
     expect(journal!.lines.find((l) => l.kind === 'REVENUE')!.taxCents).toBe(-2000);
+  });
+
+  it('blocks the date when the imbalance exceeds materiality instead of posting suspense (D7)', () => {
+    const property = makeProperty({ suspenseMaterialityCents: 3000 });
+    const categories = [makeCategory('cat-acc', 'Accommodation', '4000')];
+    const orderItems = [makeItem('cat-acc', 100, 'IE-R1', 13.5)];
+    const payments = [makePayment(150)]; // €36.50 imbalance > €30 materiality
+    const { journal, blockers } = buildDayJournal({ property, businessDate: DATE, orderItems, payments, categoriesById: categoriesById(categories) });
+    expect(journal).toBeNull();
+    expect(blockers.some((b) => b.includes('materiality'))).toBe(true);
+
+    // Same day under a percent-of-revenue limit: 36.50 vs 2% of €113.50 gross.
+    const pct = buildDayJournal({
+      property: makeProperty({ suspenseMaterialityPercent: 2 }),
+      businessDate: DATE,
+      orderItems,
+      payments,
+      categoriesById: categoriesById(categories),
+    });
+    expect(pct.journal).toBeNull();
+    expect(pct.blockers.some((b) => b.includes('materiality'))).toBe(true);
+
+    // Below materiality behaves as before: suspense + warning.
+    const under = buildDayJournal({
+      property: makeProperty({ suspenseMaterialityCents: 5000 }),
+      businessDate: DATE,
+      orderItems,
+      payments,
+      categoriesById: categoriesById(categories),
+    });
+    expect(under.journal).not.toBeNull();
+    expect(under.journal!.lines.some((l) => l.kind === 'SUSPENSE')).toBe(true);
   });
 });
 

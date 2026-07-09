@@ -1,5 +1,11 @@
 import type { PropertyConfig } from '../src/config.js';
-import type { HyperAccountsJournal, JournalPostResult } from '../src/hyperaccounts/client.js';
+import type {
+  AuditHeader,
+  AuditSplit,
+  HyperAccountsJournal,
+  JournalPostResult,
+  SearchFilter,
+} from '../src/hyperaccounts/client.js';
 import type {
   MewsAccountingCategory,
   MewsConfigurationResponse,
@@ -18,7 +24,11 @@ export function makeProperty(overrides: Partial<PropertyConfig> = {}): PropertyC
     name: 'Test Hotel',
     startDate: '2026-07-01',
     mewsAccessTokenEnv: 'MEWS_ACCESS_TOKEN_PROP1',
-    hyperAccounts: { baseUrl: 'http://localhost:5000', authTokenEnv: 'HA_TOKEN_PROP1' },
+    hyperAccounts: {
+      baseUrl: 'http://localhost:5000',
+      authTokenEnv: 'HA_TOKEN_PROP1',
+      readback: { enabled: true, invRefField: 'invRef', compareSplits: true },
+    },
     timezone: 'Europe/Dublin',
     endOfDay: '00:00',
     endOfDayMinutes: 0,
@@ -26,6 +36,9 @@ export function makeProperty(overrides: Partial<PropertyConfig> = {}): PropertyC
     maxCatchupDays: 31,
     roundingToleranceCents: 2,
     vatWarnToleranceCents: 2,
+    vatMismatchPolicy: 'block',
+    suspenseMaterialityCents: null,
+    suspenseMaterialityPercent: null,
     requireAdjustmentApproval: true,
     adjustmentDating: 'detection',
     ledgerCodeField: 'LedgerAccountCode',
@@ -142,25 +155,54 @@ export class FakeMews implements MewsDataSource {
 
 export type FakeHaMode = 'ok' | 'reject' | 'ambiguous' | 'unreachable';
 
+/**
+ * Simulates HyperAccounts including the audit-table read-back: `posted`
+ * doubles as the Sage AUDIT_HEADER store, searchable by invRef.
+ */
 export class FakeHa {
   posted: HyperAccountsJournal[] = [];
   mode: FakeHaMode = 'ok';
-  private counter = 0;
+  /** 'ok' = searches work over `posted`; 'down' = searches throw. */
+  readback: 'ok' | 'down' = 'ok';
+  /** When an 'ambiguous' post throws, did the journal actually land in Sage? */
+  ambiguousLands = false;
 
   async postJournal(journal: HyperAccountsJournal): Promise<JournalPostResult> {
     if (this.mode === 'ambiguous') {
+      if (this.ambiguousLands) this.posted.push(journal);
       throw new AmbiguousWriteError('timeout — journal may or may not be in Sage', new Error('timeout'));
     }
     if (this.mode === 'reject') {
-      return { outcome: { kind: 'rejected', status: 400, body: 'bad journal' }, sageTransactionRef: null, rawResponse: null };
+      return { outcome: { kind: 'rejected', status: 400, body: 'bad journal' }, rawResponse: null };
     }
     if (this.mode === 'unreachable') {
-      return { outcome: { kind: 'failed_not_sent', error: 'ECONNREFUSED' }, sageTransactionRef: null, rawResponse: null };
+      return { outcome: { kind: 'failed_not_sent', error: 'ECONNREFUSED' }, rawResponse: null };
     }
     this.posted.push(journal);
-    this.counter++;
-    const ref = `SAGE-${this.counter}`;
-    return { outcome: { kind: 'ok', response: { transactionNumber: ref } }, sageTransactionRef: ref, rawResponse: JSON.stringify({ transactionNumber: ref }) };
+    // Real /api/journal response shape (G1): no transaction number.
+    const body = { success: true, code: 200, response: 0, message: 'Journal entried posted succesfully' };
+    return { outcome: { kind: 'ok', response: body }, rawResponse: JSON.stringify(body) };
+  }
+
+  async findJournalByInvRef(invRef: string): Promise<AuditHeader | null> {
+    if (this.readback === 'down') throw new Error('audit search unavailable');
+    const index = this.posted.findIndex((j) => j.invRef === invRef);
+    if (index === -1) return null;
+    return { invRef, tranNumber: `SAGE-${index + 1}`, headerNumber: index + 1 };
+  }
+
+  async searchSplits(filters: SearchFilter[]): Promise<AuditSplit[]> {
+    if (this.readback === 'down') throw new Error('audit search unavailable');
+    const headerNumber = Number(filters.find((f) => f.field === 'headerNumber')?.value);
+    const journal = this.posted[headerNumber - 1];
+    if (!journal) return [];
+    return journal.splits.map((s) => ({
+      nominalCode: s.nominalCode,
+      netAmount: s.netAmount,
+      taxAmount: s.taxAmount,
+      type: s.type,
+      headerNumber,
+    }));
   }
 }
 

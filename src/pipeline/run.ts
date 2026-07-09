@@ -18,7 +18,7 @@ import { logger } from '../util/logger.js';
 import {
   processDate,
   type DateOutcome,
-  type JournalPoster,
+  type SagePoster,
   type MewsDataSource,
 } from './processDate.js';
 
@@ -40,7 +40,7 @@ export interface RunOptions {
   now?: DateTime;
   /** Injectable factories for tests. */
   mewsFactory?: (property: PropertyConfig) => MewsDataSource;
-  haFactory?: (property: PropertyConfig) => JournalPoster;
+  haFactory?: (property: PropertyConfig) => SagePoster;
 }
 
 export interface PropertyRunSummary {
@@ -69,7 +69,7 @@ function defaultMewsFactory(config: MewsyConfig) {
 }
 
 function defaultHaFactory() {
-  return (property: PropertyConfig): JournalPoster =>
+  return (property: PropertyConfig): SagePoster =>
     new HyperAccountsClient({
       baseUrl: property.hyperAccounts.baseUrl,
       authToken: requireEnv(property.hyperAccounts.authTokenEnv),

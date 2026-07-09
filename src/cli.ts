@@ -3,8 +3,9 @@ import { Command } from 'commander';
 import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { DateTime } from 'luxon';
-import { Alerter } from './alerts.js';
+import { Alerter, sendHeartbeat } from './alerts.js';
 import { loadConfig, requireEnv, type MewsyConfig, type PropertyConfig } from './config.js';
+import { acquireLock } from './util/lock.js';
 import { HyperAccountsClient } from './hyperaccounts/client.js';
 import { MewsClient } from './mews/client.js';
 import { approveAdjustment, rejectAdjustment } from './pipeline/adjustments.js';
@@ -37,6 +38,8 @@ interface Ctx {
   alert: Alerter;
   runId: string;
   reportDir: string;
+  dbPath: string;
+  heartbeatUrl?: string;
 }
 
 function makeCtx(opts: { config?: string; db?: string }): Ctx {
@@ -47,8 +50,14 @@ function makeCtx(opts: { config?: string; db?: string }): Ctx {
   const store = new Store(openDb(dbPath));
   const runId = `run-${DateTime.utc().toFormat('yyyyMMdd-HHmmss')}-${randomBytes(2).toString('hex')}`;
   const webhookUrl = config.alerts.webhookUrlEnv ? process.env[config.alerts.webhookUrlEnv] : undefined;
+  const heartbeatUrl = config.alerts.heartbeatUrlEnv ? process.env[config.alerts.heartbeatUrlEnv] : undefined;
   const alert = new Alerter(store, runId, webhookUrl);
-  return { config, store, alert, runId, reportDir };
+  return { config, store, alert, runId, reportDir, dbPath, heartbeatUrl };
+}
+
+/** Mutating commands take an exclusive lock so a manual run can't race the scheduled one. */
+function lockFor(ctx: Ctx, label: string): () => void {
+  return acquireLock(`${ctx.dbPath}.lock`, label);
 }
 
 function haFactory(property: PropertyConfig): HyperAccountsClient {
@@ -100,6 +109,7 @@ program
   .option('--to <yyyy-mm-dd>', 'end of an explicit date range')
   .action(async (opts) => {
     const ctx = makeCtx(program.opts());
+    const release = lockFor(ctx, `run${opts.dryRun ? ' --dry-run' : ''}`);
     for (const d of [opts.date, opts.from, opts.to].filter(Boolean) as string[]) {
       if (!isValidBusinessDate(d)) throw new Error(`Invalid date ${d} (expected yyyy-MM-dd)`);
     }
@@ -121,6 +131,10 @@ program
       if (prop.error || prop.outcomes.some((o) => !GOOD_OUTCOMES.has(o.kind))) allGood = false;
     }
     ctx.store.audit(ctx.runId, 'RUN_END', { allGood });
+    // Dead-man's switch: the ping's ABSENCE is what the external monitor
+    // alerts on, so a dead box or disabled task can never look healthy.
+    if (ctx.heartbeatUrl) await sendHeartbeat(ctx.heartbeatUrl, allGood, ctx.runId);
+    release();
     if (!allGood) process.exitCode = 2;
   });
 
@@ -301,7 +315,9 @@ adjustments
       process.exitCode = 1;
       return;
     }
+    const release = lockFor(ctx, `adjustments approve --id ${opts.id}`);
     const result = await approveAdjustment(ctx.config, ctx.store, ctx.alert, ctx.runId, Number(opts.id), haFactory);
+    release();
     console.log(result.message);
     if (!result.ok) process.exitCode = 2;
   });
@@ -332,6 +348,8 @@ program
       throw new Error(`Row #${row.id} is ${row.status} — only UNKNOWN/ATTEMPTING rows can be resolved`);
     }
     if (opts.outcome !== 'posted' && opts.outcome !== 'failed') throw new Error('--outcome must be "posted" or "failed"');
+    const release = lockFor(ctx, `resolve --id ${opts.id}`);
+    process.once('exit', release);
     const note = `Manually resolved as ${opts.outcome}${opts.note ? `: ${opts.note}` : ''}`;
     if (opts.outcome === 'posted') {
       ctx.store.updateLedgerStatus(row.id, 'POSTED', { sageTransactionRef: opts.sageRef ?? null, note });
@@ -358,6 +376,7 @@ program
     const date = opts.date ?? DateTime.utc().setZone(property.timezone).toISODate()!;
     if (!isValidBusinessDate(date)) throw new Error(`Invalid date ${date}`);
     if (opts.revenueNominal.length > 8) throw new Error('revenue nominal exceeds 8 chars');
+    if (opts.yes) lockFor(ctx, `vat-spike --property ${opts.property}`);
     const result = await runVatSpike({
       property,
       store: ctx.store,

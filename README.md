@@ -79,8 +79,9 @@ mewsy resolve --id 7 --outcome posted --sage-ref 12345   # after manually checki
 
 - **Money is integer cents** internally; decimals exist only at the API boundaries. Sub-cent input fails loudly.
 - **Idempotency** (§8.1): deterministic `invRef` per property+date (`MEWSY-REV-PROP1-20260701`), a posting ledger mapping each Mews day to its Sage transaction, and a content hash of the journal's *financial substance*. Same content → skip; changed content → a **delta adjustment journal** is staged for approval (never a repost, never an edit of a posted entry).
-- **Ambiguous writes are frozen, not retried**: if the journal POST times out or 5xxs, the outcome is recorded as `UNKNOWN` and the date is blocked until a human confirms in Sage (`mewsy resolve`). A blind retry could double-post revenue; Mewsy never does that. Definite failures (4xx, connection refused) are safe and retried on the next run.
-- **Reconciliation** (§8.2): after every post, Mewsy re-fetches the day from Mews and verifies Sage-held content matches exactly; journals are asserted to net to zero before posting. Variance → alert, dead-letter, watermark held.
+- **Ambiguous writes are resolved, never blindly retried**: if the journal POST times out or 5xxs, Mewsy searches Sage's audit table for the journal's `invRef` — found means it posted (the `tranNumber` is captured), absent means a retry is safe. Only when that read-back is itself unavailable is the date frozen as `UNKNOWN` for a human (`mewsy resolve`). A blind retry could double-post revenue; Mewsy never does that.
+- **Reconciliation** (§8.2): after every post, Mewsy re-fetches the day from Mews, verifies the content matches exactly, **and read-verifies the journals in Sage itself** (audit-header presence + split totals). Journals are asserted to net to zero before posting. Variance → alert, dead-letter, watermark held.
+- **Materiality guard**: an unexplained day imbalance beyond the configured materiality (absolute € and/or % of revenue) blocks the date rather than posting a large suspense line; a materially wrong VAT amount vs the mapped rate blocks by default until the tax mapping is trusted (`vatMismatchPolicy`).
 - **Watermark per property** advances only on verified success; a property stops at its first failed date so postings always land in order.
 - **Audit log is append-only**, enforced by SQLite triggers (§8.3). Every attempt, payload, response, outcome and alert is recorded.
 - **Overpayments/imbalance** go to the configured suspense nominal so the journal still balances and the residual is visible for follow-up (§5); imbalances ≤ `roundingToleranceCents` are treated as rounding.
@@ -101,8 +102,12 @@ See [config/mewsy.example.json](config/mewsy.example.json). Everything under `de
 | `adjustmentDating` | adjustment journal date: `detection` or `source` | `detection` |
 | `ledgerCodeField` | Mews category field carrying the Sage nominal | `LedgerAccountCode` |
 | `maxCatchupDays` | safety valve on catch-up after downtime | `31` |
+| `vatMismatchPolicy` | material rate deviation: `block` (pre-trust) or `warn` | `block` |
+| `suspenseMaterialityCents` / `suspenseMaterialityPercent` | imbalance above either blocks the date instead of posting suspense (`null` = off) | `null` |
+| `hyperAccounts.readback` | Sage audit-table read-back: `enabled`, `invRefField` (confirm on instance), `compareSplits` | on |
+| `alerts.heartbeatUrlEnv` | env var naming the dead-man's-switch monitor URL | — |
 
-Data lives in `./data/` (SQLite DB + reports) — override with `MEWSY_DB` / `MEWSY_REPORT_DIR`.
+Data lives in `./data/` (SQLite DB + reports) — override with `MEWSY_DB` / `MEWSY_REPORT_DIR`. Deployment, scheduling (04:00 `Europe/Dublin`), alert routing (Teams via the Workflows app — incoming webhooks are retired), heartbeat monitoring and backups are covered in [docs/OPERATIONS.md](docs/OPERATIONS.md).
 
 ## Development
 

@@ -11,13 +11,19 @@ import {
   type JournalLine,
   type JournalTotals,
 } from '../domain/journal.js';
-import type { HyperAccountsJournal, JournalPostResult } from '../hyperaccounts/client.js';
+import type { JournalPostResult } from '../hyperaccounts/client.js';
 import type {
   MewsAccountingCategory,
   MewsConfigurationResponse,
   MewsOrderItem,
   MewsPayment,
 } from '../mews/types.js';
+import {
+  lookupTranNumber,
+  resolveAmbiguousOutcome,
+  verifyInSage,
+  type SagePoster,
+} from './readback.js';
 import type { LedgerKind } from '../store/db.js';
 import type { Store } from '../store/store.js';
 import { businessDateWindowUtc } from '../util/dates.js';
@@ -39,9 +45,7 @@ export interface MewsDataSource {
   getClosedPayments(interval: { startUtc: string; endUtc: string }): Promise<MewsPayment[]>;
 }
 
-export interface JournalPoster {
-  postJournal(journal: HyperAccountsJournal): Promise<JournalPostResult>;
-}
+export type { SagePoster } from './readback.js';
 
 export type DateOutcomeKind =
   | 'POSTED' // posted and reconciled clean
@@ -81,7 +85,7 @@ export interface DateOutcome {
 
 export interface ProcessDateDeps {
   mews: MewsDataSource;
-  ha: JournalPoster | null; // null in dry-run mode
+  ha: SagePoster | null; // null in dry-run mode
   store: Store;
   alert: Alerter;
   runId: string;
@@ -140,6 +144,7 @@ async function postWithLedger(
 ): Promise<PostResult> {
   const { store, alert, runId } = deps;
   if (!deps.ha) throw new Error('Internal: postWithLedger called without a HyperAccounts client');
+  const readback = property.hyperAccounts.readback;
 
   const maxAttempts = 1 + property.journalRetries;
   for (let i = 0; i < maxAttempts; i++) {
@@ -164,34 +169,75 @@ async function postWithLedger(
     try {
       result = await deps.ha.postJournal(payload);
     } catch (err) {
-      // Ambiguous: Sage may hold this journal. Freeze the date until resolved.
+      // Ambiguous: Sage may hold this journal. Resolve via the read-back
+      // (G3): found ⇒ posted; absent ⇒ safe retry; freeze only if the
+      // search itself is unavailable (D4 as amended).
       const message = err instanceof AmbiguousWriteError ? err.message : String(err);
-      store.updateLedgerStatus(rowId, 'UNKNOWN', { note: message });
-      store.audit(runId, 'POST_AMBIGUOUS', { rowId, invRef, message }, property.code, businessDate);
+      const resolution = await resolveAmbiguousOutcome(deps.ha, invRef, readback);
+
+      if (resolution.kind === 'posted') {
+        store.updateLedgerStatus(rowId, 'POSTED', {
+          sageTransactionRef: resolution.tranNumber,
+          note: `Ambiguous outcome (${message}) resolved as POSTED via Sage read-back`,
+        });
+        store.audit(runId, 'POST_RECOVERED_VIA_READBACK', { rowId, invRef, tranNumber: resolution.tranNumber }, property.code, businessDate);
+        await alert.send(
+          'warn',
+          'POST_RECOVERED',
+          `Journal ${invRef} hit an ambiguous outcome but the Sage read-back found it — recorded as posted (Sage ref ${resolution.tranNumber ?? 'n/a'})`,
+          { propertyCode: property.code, businessDate, ledgerRowId: rowId },
+        );
+        return { ok: true, kind: 'POSTED', invRef, sageTransactionRef: resolution.tranNumber };
+      }
+
+      if (resolution.kind === 'absent') {
+        store.updateLedgerStatus(rowId, 'FAILED', {
+          note: `Ambiguous outcome (${message}); Sage read-back confirms the journal is absent — safe to retry`,
+        });
+        store.audit(runId, 'POST_ABSENT_CONFIRMED', { rowId, invRef, message }, property.code, businessDate);
+        if (i === maxAttempts - 1) {
+          store.deadLetter(runId, property.code, businessDate, 'Journal post failed (confirmed absent in Sage)', { rowId, invRef, message });
+          await alert.send(
+            'error',
+            'POST_FAILED',
+            `Journal ${invRef} failed (${message}); Sage read-back confirms it is NOT in Sage — will retry next run`,
+            { propertyCode: property.code, businessDate, ledgerRowId: rowId },
+          );
+          return { ok: false, kind: 'POST_FAILED', invRef, sageTransactionRef: null };
+        }
+        continue; // verified absent — an in-run retry is safe
+      }
+
+      // Read-back unavailable: the original D4 freeze applies.
+      store.updateLedgerStatus(rowId, 'UNKNOWN', { note: `${message}; read-back unavailable: ${resolution.error}` });
+      store.audit(runId, 'POST_AMBIGUOUS', { rowId, invRef, message, readback: resolution.error }, property.code, businessDate);
       store.deadLetter(runId, property.code, businessDate, 'Journal post outcome unknown', { rowId, invRef, message });
       await alert.send(
         'error',
         'POST_UNKNOWN',
-        `Journal ${invRef} outcome UNKNOWN — verify in Sage whether it exists, then run: mewsy resolve --id ${rowId} --outcome posted|failed`,
-        { propertyCode: property.code, businessDate, detail: { rowId, invRef, message } },
+        `Journal ${invRef} outcome UNKNOWN and the Sage read-back is unavailable (${resolution.error}) — verify in Sage whether it exists, then run: mewsy resolve --id ${rowId} --outcome posted|failed`,
+        {
+          propertyCode: property.code,
+          businessDate,
+          ledgerRowId: rowId,
+          remediation: `mewsy resolve --id ${rowId} --outcome posted|failed`,
+          detail: { invRef, message },
+        },
       );
       return { ok: false, kind: 'POST_UNKNOWN', invRef, sageTransactionRef: null };
     }
 
     if (result.outcome.kind === 'ok') {
+      // G1: /api/journal returns no transaction number — capture it from the
+      // audit-header read-back instead (best-effort).
+      const tranNumber = await lookupTranNumber(deps.ha, invRef, readback);
       store.updateLedgerStatus(rowId, 'POSTED', {
-        sageTransactionRef: result.sageTransactionRef,
+        sageTransactionRef: tranNumber,
         haResponse: result.rawResponse,
       });
-      store.audit(
-        runId,
-        'POSTED',
-        { rowId, invRef, sageTransactionRef: result.sageTransactionRef },
-        property.code,
-        businessDate,
-      );
-      logger.info(`Posted ${invRef} → Sage ref ${result.sageTransactionRef ?? '(none returned)'}`);
-      return { ok: true, kind: 'POSTED', invRef, sageTransactionRef: result.sageTransactionRef };
+      store.audit(runId, 'POSTED', { rowId, invRef, sageTransactionRef: tranNumber }, property.code, businessDate);
+      logger.info(`Posted ${invRef} → Sage ref ${tranNumber ?? '(read-back unavailable)'}`);
+      return { ok: true, kind: 'POSTED', invRef, sageTransactionRef: tranNumber };
     }
 
     if (result.outcome.kind === 'rejected') {
@@ -234,10 +280,28 @@ async function reconcileAfterPost(
   if (!rebuilt.journal) {
     return { verified: false, deltaLineCount: -1, detail: `Reconcile rebuild blocked: ${rebuilt.blockers.join('; ')}` };
   }
-  const posted = store.postedRows(property.code, businessDate).map((r) => store.parseLines(r));
+  const postedRows = store.postedRows(property.code, businessDate);
+  const posted = postedRows.map((r) => store.parseLines(r));
   const delta = buildAdjustmentLines(posted, rebuilt.journal, businessDate);
   if (delta.length === 0) {
-    return { verified: true, deltaLineCount: 0, detail: 'Sage postings match Mews Closed figures exactly' };
+    // Mews-side clean. Now verify Sage-side via the audit-table read-back
+    // (D8 upgraded per response §2): the ledger is no longer trusted as a
+    // proxy for what is actually in Sage.
+    let detail = 'Sage postings match Mews Closed figures exactly';
+    if (deps.ha) {
+      const verification = await verifyInSage(
+        deps.ha,
+        postedRows.map((r) => ({ invRef: r.inv_ref, lines: store.parseLines(r) })),
+        property.hyperAccounts.readback,
+      );
+      if (verification.kind === 'mismatch') {
+        return { verified: false, deltaLineCount: 0, detail: verification.detail };
+      }
+      detail += verification.kind === 'verified'
+        ? `; ${verification.detail}`
+        : `; ${verification.detail} — verified against the local ledger only`;
+    }
+    return { verified: true, deltaLineCount: 0, detail };
   }
   const totalDrift = delta.reduce((s, l) => s + Math.abs(l.netCents) + Math.abs(l.taxCents), 0);
   return {
@@ -274,6 +338,8 @@ export async function processDate(
     await alert.send('error', 'BLOCKED_UNRESOLVED', report.blockers[0]!, {
       propertyCode: property.code,
       businessDate,
+      ledgerRowId: unresolved[0]!.id,
+      remediation: `mewsy resolve --id ${unresolved[0]!.id} --outcome posted|failed`,
       detail: { rows: unresolved.map((r) => r.id) },
     });
     return { kind: 'BLOCKED_UNRESOLVED', advanceWatermark: false, report };

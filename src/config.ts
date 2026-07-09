@@ -58,8 +58,21 @@ const settingsShape = {
   maxCatchupDays: z.number().int().min(1).max(366).default(31),
   /** Imbalance up to this many cents is treated as rounding; beyond it, suspense + alert. */
   roundingToleranceCents: z.number().int().min(0).max(1000).default(2),
-  /** Per-line |net×rate − tax| beyond this warns (Mews stays source of truth). */
+  /** Per-line |net×rate − tax| beyond this is a mismatch (see vatMismatchPolicy). */
   vatWarnToleranceCents: z.number().int().min(0).max(1000).default(2),
+  /**
+   * Material VAT-rate mismatch handling (D15, response §3): 'block' while the
+   * tax mapping is being established (pre-opening / parallel run), relax to
+   * 'warn' once trusted. Within-tolerance deviations never trigger either.
+   */
+  vatMismatchPolicy: z.enum(['block', 'warn']).default('block'),
+  /**
+   * Materiality for the suspense balancing line (D7, response §3): an
+   * imbalance above EITHER limit blocks the date instead of posting to
+   * suspense. null disables that limit. Values are finance-owned (F8).
+   */
+  suspenseMaterialityCents: z.number().int().min(0).nullable().default(null),
+  suspenseMaterialityPercent: z.number().min(0).max(100).nullable().default(null),
   /** Stage adjustment journals for human approval instead of auto-posting. */
   requireAdjustmentApproval: z.boolean().default(true),
   /** Journal date for adjustments: date detected vs original business date. */
@@ -102,6 +115,16 @@ const propertySchema = z
     hyperAccounts: z.object({
       baseUrl: z.string().url(),
       authTokenEnv: z.string().min(1),
+      /** Sage read-back over the audit tables (G3). Degrades gracefully when the search fails. */
+      readback: z
+        .object({
+          enabled: z.boolean().default(true),
+          /** Searchable column for invRef — camelCase per the API reference; confirm on the instance (may be INV_REF). */
+          invRefField: z.string().default('invRef'),
+          /** Also compare AUDIT_SPLIT rows against the ledger during reconciliation. */
+          compareSplits: z.boolean().default(true),
+        })
+        .default({}),
     }),
   })
   .merge(settingsOverrideSchema);
@@ -115,6 +138,12 @@ const configSchema = z.object({
   alerts: z
     .object({
       webhookUrlEnv: z.string().optional(),
+      /**
+       * Dead-man's switch (response §1/D4a): env var naming a monitor URL
+       * pinged on every run completion (…/fail on a problem run). An external
+       * monitor alerts on a MISSING ping — silence must never look healthy.
+       */
+      heartbeatUrlEnv: z.string().optional(),
     })
     .default({}),
   defaults: settingsSchema,
@@ -124,18 +153,24 @@ const configSchema = z.object({
 export type Settings = z.infer<typeof settingsSchema>;
 export type RawConfig = z.infer<typeof configSchema>;
 
+export interface HyperAccountsReadbackConfig {
+  enabled: boolean;
+  invRefField: string;
+  compareSplits: boolean;
+}
+
 export interface PropertyConfig extends Settings {
   code: string;
   name: string;
   startDate: string;
   mewsAccessTokenEnv: string;
-  hyperAccounts: { baseUrl: string; authTokenEnv: string };
+  hyperAccounts: { baseUrl: string; authTokenEnv: string; readback: HyperAccountsReadbackConfig };
   endOfDayMinutes: number;
 }
 
 export interface MewsyConfig {
   mews: { baseUrl: string; clientTokenEnv: string; clientName: string };
-  alerts: { webhookUrlEnv?: string };
+  alerts: { webhookUrlEnv?: string; heartbeatUrlEnv?: string };
   properties: PropertyConfig[];
 }
 

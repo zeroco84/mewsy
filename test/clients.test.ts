@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractTransactionRef, HyperAccountsClient } from '../src/hyperaccounts/client.js';
+import { HyperAccountsClient } from '../src/hyperaccounts/client.js';
 import { MewsClient } from '../src/mews/client.js';
 import type { FetchFn } from '../src/util/http.js';
 
@@ -66,7 +66,7 @@ describe('MewsClient', () => {
 });
 
 describe('HyperAccountsClient', () => {
-  it('posts with the AuthToken header and extracts the transaction ref', async () => {
+  it('posts with the AuthToken header and accepts the documented response shape (G1)', async () => {
     let captured: { url: string; headers: Record<string, string>; body: unknown } | null = null;
     const fetchFn: FetchFn = async (url, init) => {
       captured = {
@@ -74,14 +74,22 @@ describe('HyperAccountsClient', () => {
         headers: Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)),
         body: JSON.parse(String(init?.body)),
       };
-      return jsonResponse({ transactionNumber: 12345 });
+      // Verbatim vendor response, typos included — never match on message.
+      return jsonResponse({ success: true, code: 200, response: 0, message: 'Journal entried posted succesfully' });
     };
     const client = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 'secret', fetchFn });
     const result = await client.postJournal({ date: '01/07/2026', invRef: 'X', accountRef: '1200', splits: [] });
     expect(result.outcome.kind).toBe('ok');
-    expect(result.sageTransactionRef).toBe('12345');
+    expect(result.rawResponse).toContain('"success":true');
     expect(captured!.url).toBe('http://localhost:5000/api/journal');
     expect(captured!.headers['AuthToken']).toBe('secret');
+  });
+
+  it('treats a 2xx body with success:false as a definite rejection (G1)', async () => {
+    const fetchFn: FetchFn = async () => jsonResponse({ success: false, code: 422, response: 0, message: 'nominal not found' });
+    const client = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 't', fetchFn });
+    const result = await client.postJournal({ date: '01/07/2026', invRef: 'X', accountRef: '1200', splits: [] });
+    expect(result.outcome).toMatchObject({ kind: 'rejected', status: 422 });
   });
 
   it('returns a definite rejected outcome on 4xx', async () => {
@@ -98,16 +106,32 @@ describe('HyperAccountsClient', () => {
       /may or may not/,
     );
   });
-});
 
-describe('extractTransactionRef', () => {
-  it('handles common response shapes', () => {
-    expect(extractTransactionRef({ transactionNumber: 42 })).toBe('42');
-    expect(extractTransactionRef({ TranNumber: '99' })).toBe('99');
-    expect(extractTransactionRef({ data: { Id: 'abc' } })).toBe('abc');
-    expect(extractTransactionRef('  TXN-7 ')).toBe('TXN-7');
-    expect(extractTransactionRef(1234)).toBe('1234');
-    expect(extractTransactionRef(null)).toBeNull();
-    expect(extractTransactionRef({ ok: true })).toBeNull();
+  it('searches auditHeaders by invRef with the filter-array grammar (G3)', async () => {
+    let captured: { url: string; body: unknown } | null = null;
+    const fetchFn: FetchFn = async (url, init) => {
+      captured = { url: String(url), body: JSON.parse(String(init?.body)) };
+      return jsonResponse([{ invRef: 'MEWSY-REV-PROP1-20260701', tranNumber: 4211, headerNumber: 88 }]);
+    };
+    const client = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 't', fetchFn });
+    const header = await client.findJournalByInvRef('MEWSY-REV-PROP1-20260701');
+    expect(captured!.url).toBe('http://localhost:5000/api/search/auditHeaders');
+    expect(captured!.body).toEqual([{ field: 'invRef', type: 'eq', value: 'MEWSY-REV-PROP1-20260701' }]);
+    expect(header).toMatchObject({ tranNumber: 4211, headerNumber: 88 });
+
+    // Alternate searchable column name is configurable (may be INV_REF on the instance).
+    await client.findJournalByInvRef('X', 'INV_REF');
+    expect((captured!.body as Array<{ field: string }>)[0]!.field).toBe('INV_REF');
+  });
+
+  it('unwraps enveloped search responses and returns [] when nothing matches', async () => {
+    const fetchFn: FetchFn = async () => jsonResponse({ success: true, response: [{ nominalCode: '4000', netAmount: 9000 }] });
+    const client = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 't', fetchFn });
+    const splits = await client.searchSplits([{ field: 'headerNumber', type: 'eq', value: 88 }]);
+    expect(splits).toEqual([{ nominalCode: '4000', netAmount: 9000 }]);
+
+    const emptyFetch: FetchFn = async () => jsonResponse({ success: true, response: [] });
+    const client2 = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 't', fetchFn: emptyFetch });
+    expect(await client2.findJournalByInvRef('NOPE')).toBeNull();
   });
 });

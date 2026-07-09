@@ -120,14 +120,39 @@ describe('processDate — the §4 state machine', () => {
     expect(store.openDeadLetters('PROP1')).toHaveLength(1);
   });
 
-  it('ambiguous post outcome freezes the date until resolved (UNKNOWN)', async () => {
+  it('ambiguous outcome + journal actually landed: auto-recovered as POSTED via read-back (G3)', async () => {
     ha.mode = 'ambiguous';
+    ha.ambiguousLands = true;
+    const outcome = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    expect(outcome.kind).toBe('POSTED');
+    expect(outcome.advanceWatermark).toBe(true);
+    expect(store.unresolvedRows('PROP1', DATE)).toHaveLength(0);
+    const posted = store.postedRows('PROP1', DATE);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.sage_transaction_ref).toBe('SAGE-1');
+  });
+
+  it('ambiguous outcome + read-back confirms absent: FAILED, no freeze, next run retries cleanly', async () => {
+    ha.mode = 'ambiguous'; // does not land
+    const outcome = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    expect(outcome.kind).toBe('POST_FAILED');
+    expect(store.unresolvedRows('PROP1', DATE)).toHaveLength(0); // no UNKNOWN — no manual resolve needed
+
+    ha.mode = 'ok';
+    const retry = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    expect(retry.kind).toBe('POSTED');
+  });
+
+  it('ambiguous post outcome freezes the date only when the read-back itself is down (D4)', async () => {
+    ha.mode = 'ambiguous';
+    ha.readback = 'down';
     const outcome = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
     expect(outcome.kind).toBe('POST_UNKNOWN');
     const unresolved = store.unresolvedRows('PROP1', DATE);
     expect(unresolved).toHaveLength(1);
 
     ha.mode = 'ok';
+    ha.readback = 'ok';
     const blocked = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
     expect(blocked.kind).toBe('BLOCKED_UNRESOLVED');
     expect(ha.posted).toHaveLength(0);
@@ -136,6 +161,14 @@ describe('processDate — the §4 state machine', () => {
     store.updateLedgerStatus(unresolved[0]!.id, 'POSTED', { sageTransactionRef: 'SAGE-MANUAL' });
     const after = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
     expect(after.kind).toBe('SKIPPED_SAME');
+  });
+
+  it('captures the Sage tranNumber from the audit read-back (G1: POST returns none)', async () => {
+    const outcome = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    expect(outcome.kind).toBe('POSTED');
+    const row = store.postedRows('PROP1', DATE)[0]!;
+    expect(row.sage_transaction_ref).toBe('SAGE-1');
+    expect(outcome.report.reconciliation?.detail).toContain('read-back');
   });
 
   it('rejected post records FAILED and a dead letter; a later run can retry', async () => {

@@ -6,6 +6,8 @@
 
 Implements an internal build specification (v0.1, 8 July 2026 — not distributed with this repository): each day, once a business date has aged past the Mews editable-history window, Mewsy pulls the finalised **Closed** accounting figures for each property, builds **one balanced journal** (revenue + payments + Irish VAT, by nominal), posts it to Sage 50 via the HyperAccounts `POST /api/journal` endpoint, and reconciles the result back against Mews — with idempotency, adjustment handling, an append-only audit log and alerting.
 
+> **⚠ Hard dependency: the Hyperext API.** Mewsy does **not** talk to Sage 50 directly — it has no SDO/ODBC integration of its own. All posting, read-back and reconciliation go through **[HyperAccounts by Hyperext](https://www.hyperext.com/)**, a commercially licensed REST API installed on the Sage server, which in turn drives **Sage 50 Accounts — the UK & Ireland desktop product** (Mewsy's VAT handling targets the **Ireland** edition). Without a licensed, running HyperAccounts instance alongside each Sage 50 (Ireland/UK) company, Mewsy cannot post a single journal. Other Sage products (Sage 50 US/CA, Sage 50cloud variants outside UK/Ireland, Sage Business Cloud, Intacct) are **not supported**.
+
 > **Read [DECISIONS.md](DECISIONS.md) before Phase 0.** It lists every assumption made while building this, and the gaps that need a decision from finance or verification against the real Mews/HyperAccounts APIs.
 
 ## How it maps to the spec
@@ -23,7 +25,12 @@ Implements an internal build specification (v0.1, 8 July 2026 — not distribute
 
 ## Setup
 
-Requires Node.js ≥ 20. On the Sage box (Windows) or anywhere for Phase 1.
+**Prerequisites**
+
+- **Sage 50 Accounts (Ireland/UK desktop)** — one company dataset per property. Mewsy's tax handling assumes the Irish VAT regime (VAT3 return).
+- **HyperAccounts by Hyperext** installed, licensed and running on the Sage server, with an `AuthToken` per company. This is the only channel Mewsy uses to reach Sage — `/api/journal` for posting, the `auditHeaders`/`searchSplit` searches for read-back and reconciliation, and `/api/status`, `/api/nominal/`, `/api/taxCode` for `mewsy validate`'s reference checks. Verified against HyperAccounts API 1.27.5.0 / Sage 32.1.
+- **Mews Connector API** credentials (ClientToken + one AccessToken per property).
+- **Node.js ≥ 20** — on the Sage box (Windows) for posting; anywhere for Phase 1 dry-runs.
 
 ```bash
 npm install

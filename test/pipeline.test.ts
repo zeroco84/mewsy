@@ -146,6 +146,7 @@ describe('processDate — the §4 state machine', () => {
   it('ambiguous post outcome freezes the date only when the read-back itself is down (D4)', async () => {
     ha.mode = 'ambiguous';
     ha.readback = 'down';
+    ha.ambiguousLands = true; // the journal actually landed, but nothing can see it yet
     const outcome = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
     expect(outcome.kind).toBe('POST_UNKNOWN');
     const unresolved = store.unresolvedRows('PROP1', DATE);
@@ -155,12 +156,77 @@ describe('processDate — the §4 state machine', () => {
     ha.readback = 'ok';
     const blocked = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
     expect(blocked.kind).toBe('BLOCKED_UNRESOLVED');
-    expect(ha.posted).toHaveLength(0);
+    expect(ha.posted).toHaveLength(1); // only the landed ambiguous journal
 
-    // Human verifies the journal IS in Sage → resolve as posted → next run reconciles.
+    // Human correctly verifies the journal IS in Sage → resolve as posted →
+    // the next run's Sage-side verification agrees and reconciles clean.
     store.updateLedgerStatus(unresolved[0]!.id, 'POSTED', { sageTransactionRef: 'SAGE-MANUAL' });
     const after = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
     expect(after.kind).toBe('SKIPPED_SAME');
+  });
+
+  it('a MISTAKEN resolve-as-posted is caught by Sage-side verification on the next run', async () => {
+    // Regression: a POSTED ledger row with no journal actually in Sage used
+    // to reconcile clean forever via SKIPPED_SAME.
+    ha.mode = 'ambiguous';
+    ha.readback = 'down'; // journal does NOT land
+    await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    const unresolved = store.unresolvedRows('PROP1', DATE);
+    store.updateLedgerStatus(unresolved[0]!.id, 'POSTED', { sageTransactionRef: 'SAGE-WRONG' }); // operator error
+
+    ha.mode = 'ok';
+    ha.readback = 'ok';
+    const outcome = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    expect(outcome.kind).toBe('VARIANCE');
+    expect(outcome.advanceWatermark).toBe(false);
+    expect(outcome.report.reconciliation?.detail).toContain('not found');
+    expect(store.openDeadLetters('PROP1').length).toBeGreaterThan(0);
+  });
+
+  it('a duplicate journal in Sage is caught by the skip-path verification', async () => {
+    await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    ha.posted.push(ha.posted[0]!); // a second copy landed in Sage somehow
+    const outcome = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    expect(outcome.kind).toBe('VARIANCE');
+    expect(outcome.report.reconciliation?.detail).toContain('2 times');
+  });
+
+  it('never reposts an invRef that is already in Sage (pre-post read-back guard)', async () => {
+    // Regression: a timed-out POST whose read-back said "absent" a moment too
+    // early was marked FAILED; the journal then landed; the next run reposted.
+    const { categories, orderItems, payments } = specExampleData();
+    const seed = new FakeHa();
+    const built = await processDate(property, DATE, 'post', makeDeps(new FakeMews(categories, orderItems, payments), seed, makeStore()));
+    expect(built.kind).toBe('POSTED');
+    ha.posted.push(...seed.posted); // same journal already sits in Sage…
+    // …but OUR ledger has only a FAILED attempt (the too-early "absent" verdict).
+    store.insertLedgerRow({
+      propertyCode: 'PROP1', businessDate: DATE, kind: 'REVENUE', seq: 0, attempt: 1,
+      invRef: 'MEWSY-REV-PROP1-20260701', status: 'FAILED', contentHash: 'x',
+      lines: [], totals: null, journalDate: DATE, note: 'ambiguous; read-back said absent',
+    });
+
+    const outcome = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    expect(outcome.kind).toBe('POSTED');
+    expect(ha.posted).toHaveLength(1); // no second copy was posted
+    const posted = store.postedRows('PROP1', DATE);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.note).toContain('pre-post read-back');
+  });
+
+  it('a zero-activity date completes as NO_ACTIVITY without posting (closure night)', async () => {
+    mews.orderItems = [];
+    mews.payments = [];
+    const outcome = await processDate(property, DATE, 'post', makeDeps(mews, ha, store));
+    expect(outcome.kind).toBe('NO_ACTIVITY');
+    expect(outcome.advanceWatermark).toBe(true);
+    expect(ha.posted).toHaveLength(0);
+    expect(store.rowsForDate('PROP1', DATE)).toHaveLength(0);
+
+    // Dry-run reports it without advancing anything.
+    const dry = await processDate(property, DATE, 'dry-run', makeDeps(mews, null, store));
+    expect(dry.kind).toBe('DRY_RUN');
+    expect(dry.report.reconciliation?.detail).toContain('No Closed activity');
   });
 
   it('captures the Sage tranNumber from the audit read-back (G1: POST returns none)', async () => {

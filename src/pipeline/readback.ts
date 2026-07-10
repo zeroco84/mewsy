@@ -10,19 +10,25 @@ import { decimalFromCents } from '../util/money.js';
 
 /**
  * Sage read-back (G3, response §2): HyperAccounts exposes searches over
- * Sage's AUDIT_HEADER / AUDIT_SPLIT tables, which turns two guesses into
- * checks:
+ * Sage's AUDIT_HEADER / AUDIT_SPLIT tables, which turns guesses into checks:
+ *
+ *  - before posting, an invRef already present in Sage means a previous
+ *    attempt landed (or a resolve was mistaken) — never post it again;
  *  - an ambiguous journal POST is resolved by searching for its invRef
  *    (found ⇒ POSTED, absent ⇒ safe retry; freeze only if the search
  *    itself is down);
- *  - reconciliation verifies what is actually IN Sage instead of trusting
- *    the local posting ledger.
+ *  - reconciliation verifies what is actually IN Sage — including that each
+ *    Mewsy invRef appears EXACTLY ONCE (the server accepts duplicates, G2,
+ *    so a duplicate is a double-post and must surface as a variance).
+ *
+ * All search failures surface as 'unavailable', never as 'absent' — a false
+ * absent would authorise a repost.
  */
 
 /** What the pipeline needs from a Sage-posting client (HyperAccountsClient satisfies this). */
 export interface SagePoster {
   postJournal(journal: HyperAccountsJournal): Promise<JournalPostResult>;
-  findJournalByInvRef(invRef: string, field?: string): Promise<AuditHeader | null>;
+  findJournalsByInvRef(invRef: string, field?: string): Promise<AuditHeader[]>;
   searchSplits(filters: SearchFilter[]): Promise<AuditSplit[]>;
 }
 
@@ -31,6 +37,27 @@ export interface ReadbackConfig {
   invRefField: string;
   splitLinkField: string;
   compareSplits: boolean;
+}
+
+export type SagePresence =
+  | { kind: 'present'; count: number; tranNumber: string | null }
+  | { kind: 'absent' }
+  | { kind: 'unavailable'; error: string };
+
+/** Is a journal with this invRef in Sage right now? */
+export async function checkPresenceInSage(
+  ha: SagePoster,
+  invRef: string,
+  readback: ReadbackConfig,
+): Promise<SagePresence> {
+  if (!readback.enabled) return { kind: 'unavailable', error: 'read-back disabled in config' };
+  try {
+    const headers = await ha.findJournalsByInvRef(invRef, readback.invRefField);
+    if (headers.length === 0) return { kind: 'absent' };
+    return { kind: 'present', count: headers.length, tranNumber: tranNumberOf(headers[0]!) };
+  } catch (err) {
+    return { kind: 'unavailable', error: String(err instanceof Error ? err.message : err) };
+  }
 }
 
 export type AmbiguousResolution =
@@ -44,14 +71,9 @@ export async function resolveAmbiguousOutcome(
   invRef: string,
   readback: ReadbackConfig,
 ): Promise<AmbiguousResolution> {
-  if (!readback.enabled) return { kind: 'unavailable', error: 'read-back disabled in config' };
-  try {
-    const header = await ha.findJournalByInvRef(invRef, readback.invRefField);
-    if (header) return { kind: 'posted', tranNumber: tranNumberOf(header) };
-    return { kind: 'absent' };
-  } catch (err) {
-    return { kind: 'unavailable', error: String(err instanceof Error ? err.message : err) };
-  }
+  const presence = await checkPresenceInSage(ha, invRef, readback);
+  if (presence.kind === 'present') return { kind: 'posted', tranNumber: presence.tranNumber };
+  return presence;
 }
 
 /** Best-effort tranNumber capture after a successful post (G1: the POST response carries none). */
@@ -60,13 +82,8 @@ export async function lookupTranNumber(
   invRef: string,
   readback: ReadbackConfig,
 ): Promise<string | null> {
-  if (!readback.enabled) return null;
-  try {
-    const header = await ha.findJournalByInvRef(invRef, readback.invRefField);
-    return header ? tranNumberOf(header) : null;
-  } catch {
-    return null;
-  }
+  const presence = await checkPresenceInSage(ha, invRef, readback);
+  return presence.kind === 'present' ? presence.tranNumber : null;
 }
 
 function tranNumberOf(header: AuditHeader): string | null {
@@ -79,9 +96,9 @@ export type SageVerification =
   | { kind: 'unavailable'; detail: string };
 
 /**
- * Verify posted journals exist in Sage and (optionally) that their splits
- * match the ledger's lines. Split comparison uses per-nominal sums of
- * absolute net/tax so it is insensitive to the audit table's sign
+ * Verify posted journals exist in Sage EXACTLY ONCE and (optionally) that
+ * their splits match the ledger's lines. Split comparison uses per-nominal
+ * sums of absolute net/tax so it is insensitive to the audit table's sign
  * conventions; rows without the expected fields degrade to header-only
  * verification rather than false-alarming.
  */
@@ -94,10 +111,18 @@ export async function verifyInSage(
   try {
     let comparedSplits = 0;
     for (const journal of postedJournals) {
-      const header = await ha.findJournalByInvRef(journal.invRef, readback.invRefField);
-      if (!header) {
+      const headers = await ha.findJournalsByInvRef(journal.invRef, readback.invRefField);
+      if (headers.length === 0) {
         return { kind: 'mismatch', detail: `Sage read-back: journal ${journal.invRef} not found in AUDIT_HEADER` };
       }
+      if (headers.length > 1) {
+        // Mewsy invRefs are unique by construction; two headers = double-post.
+        return {
+          kind: 'mismatch',
+          detail: `Sage read-back: invRef ${journal.invRef} appears ${headers.length} times in AUDIT_HEADER — duplicate posting in Sage (tranNumbers ${headers.map((h) => h.tranNumber ?? '?').join(', ')})`,
+        };
+      }
+      const header = headers[0]!;
       if (!readback.compareSplits || header.headerNumber === undefined || header.headerNumber === null) continue;
 
       const splits = await ha.searchSplits([{ field: readback.splitLinkField, type: 'eq', value: header.headerNumber }]);

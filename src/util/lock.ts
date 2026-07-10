@@ -1,4 +1,4 @@
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 
 /**
  * Single-process lock (response §4): "single scheduled run" holds right up
@@ -10,7 +10,9 @@ import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
  * and reclaimed automatically.
  */
 export function acquireLock(path: string, label: string): () => void {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Three attempts: initial try, retry after reclaiming a stale lock, and a
+  // final read of whichever process won a reclaim race.
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       writeFileSync(path, JSON.stringify({ pid: process.pid, label, acquiredAtUtc: new Date().toISOString() }), {
         flag: 'wx',
@@ -38,14 +40,24 @@ export function acquireLock(path: string, label: string): () => void {
             `Wait for it to finish; if that process is dead, delete ${path}.`,
         );
       }
+      // Stale reclaim must be race-safe: an unconditional unlink could delete
+      // a LIVE lock written by a competing reclaimer between our read and
+      // unlink. rename() is atomic — exactly one reclaimer wins it; losers
+      // loop and re-read whichever fresh lock now exists.
+      const graveyard = `${path}.stale-${process.pid}-${attempt}`;
       try {
-        unlinkSync(path); // stale — reclaim and retry once
+        renameSync(path, graveyard);
       } catch {
-        /* raced with another reclaimer */
+        continue; // someone else reclaimed first — retry against their lock
+      }
+      try {
+        unlinkSync(graveyard);
+      } catch {
+        /* best-effort cleanup */
       }
     }
   }
-  throw new Error(`Could not acquire lock at ${path}`);
+  throw new Error(`Could not acquire lock at ${path} (lost the reclaim race repeatedly)`);
 }
 
 function pidAlive(pid: number): boolean {

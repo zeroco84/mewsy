@@ -87,7 +87,7 @@ function requireProperty(config: MewsyConfig, code: string): PropertyConfig {
   return property;
 }
 
-const GOOD_OUTCOMES = new Set(['POSTED', 'SKIPPED_SAME', 'ADJUSTMENT_POSTED', 'DRY_RUN']);
+const GOOD_OUTCOMES = new Set(['POSTED', 'NO_ACTIVITY', 'SKIPPED_SAME', 'ADJUSTMENT_POSTED', 'DRY_RUN']);
 
 const program = new Command();
 program
@@ -172,6 +172,13 @@ program
   .action(async (opts) => {
     const ctx = makeCtx(program.opts());
     let problems = 0;
+    // An unknown code must fail loudly (like run/report) — a typo'd -p that
+    // matches nothing would otherwise run zero checks and exit 0.
+    for (const code of (opts.property ?? []) as string[]) {
+      if (!ctx.config.properties.some((p) => p.code === code)) {
+        throw new Error(`Unknown property ${code} (configured: ${ctx.config.properties.map((p) => p.code).join(', ')})`);
+      }
+    }
     const properties = ctx.config.properties.filter((p) => !opts.property || opts.property.includes(p.code));
     console.log(`Config OK — ${ctx.config.properties.length} property/ies, Mews base ${process.env['MEWS_BASE_URL'] ?? ctx.config.mews.baseUrl}`);
 
@@ -347,7 +354,7 @@ adjustments
 
 program
   .command('resolve')
-  .description('Resolve a posting attempt with uncertain outcome (UNKNOWN/ATTEMPTING) after manually checking Sage')
+  .description('Resolve a posting attempt after manually checking Sage: UNKNOWN/ATTEMPTING → posted|failed; a mistaken POSTED row → failed')
   .requiredOption('--id <rowId>', 'posting-ledger row id')
   .requiredOption('--outcome <posted|failed>', '"posted" if the journal IS in Sage, "failed" if it is NOT')
   .option('--sage-ref <ref>', 'Sage transaction number (when outcome=posted)')
@@ -356,10 +363,18 @@ program
     const ctx = makeCtx(program.opts());
     const row = ctx.store.getLedgerRow(Number(opts.id));
     if (!row) throw new Error(`No posting-ledger row #${opts.id}`);
-    if (row.status !== 'UNKNOWN' && row.status !== 'ATTEMPTING') {
-      throw new Error(`Row #${row.id} is ${row.status} — only UNKNOWN/ATTEMPTING rows can be resolved`);
-    }
     if (opts.outcome !== 'posted' && opts.outcome !== 'failed') throw new Error('--outcome must be "posted" or "failed"');
+    const allowed = opts.outcome === 'posted'
+      ? row.status === 'UNKNOWN' || row.status === 'ATTEMPTING'
+      // POSTED → failed corrects a mistaken earlier resolve (Sage-side
+      // reconciliation flags these as VARIANCE: "not found in AUDIT_HEADER").
+      : row.status === 'UNKNOWN' || row.status === 'ATTEMPTING' || row.status === 'POSTED';
+    if (!allowed) {
+      throw new Error(`Row #${row.id} is ${row.status} — cannot resolve it as ${opts.outcome}`);
+    }
+    if (row.status === 'POSTED' && opts.outcome === 'failed') {
+      console.log(`⚠ Marking POSTED row #${row.id} as FAILED: the next run will treat ${row.inv_ref} as not in Sage and repost it. Only do this after confirming in Sage that it is absent.`);
+    }
     const release = lockFor(ctx, `resolve --id ${opts.id}`);
     process.once('exit', release);
     const note = `Manually resolved as ${opts.outcome}${opts.note ? `: ${opts.note}` : ''}`;

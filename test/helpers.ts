@@ -184,11 +184,12 @@ export class FakeHa {
     return { outcome: { kind: 'ok', response: body }, rawResponse: JSON.stringify(body) };
   }
 
-  async findJournalByInvRef(invRef: string): Promise<AuditHeader | null> {
+  async findJournalsByInvRef(invRef: string): Promise<AuditHeader[]> {
     if (this.readback === 'down') throw new Error('audit search unavailable');
-    const index = this.posted.findIndex((j) => j.invRef === invRef);
-    if (index === -1) return null;
-    return { invRef, tranNumber: `SAGE-${index + 1}`, headerNumber: index + 1 };
+    return this.posted
+      .map((j, index) => ({ j, index }))
+      .filter(({ j }) => j.invRef === invRef)
+      .map(({ index }) => ({ invRef, tranNumber: `SAGE-${index + 1}`, headerNumber: index + 1 }));
   }
 
   async searchSplits(filters: SearchFilter[]): Promise<AuditSplit[]> {

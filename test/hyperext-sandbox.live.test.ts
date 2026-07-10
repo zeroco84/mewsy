@@ -28,6 +28,10 @@ import { AmbiguousWriteError } from '../src/util/http.js';
  * G3 (searchable invRef column), G4 (auth), G6 (details limit).
  */
 
+// The explicit-invocation gate must come from the REAL environment, never
+// from .env — capture it before the merge below.
+const MEWSY_LIVE_FROM_SHELL = process.env['MEWSY_LIVE'];
+
 // Pick up .env like the CLI does (non-overriding).
 if (existsSync('.env')) {
   for (const line of readFileSync('.env', 'utf8').split('\n')) {
@@ -49,7 +53,7 @@ const TAXCODE = Number(process.env['HYPERACCOUNTS_LIVE_TAXCODE'] ?? '9');
 // Only run when explicitly invoked (npm run test:live, or MEWSY_LIVE=1 for
 // direct vitest invocation) — a configured .env must not make plain
 // `npm test` hit the vendor's shared sandbox on every run.
-const invoked = process.env['npm_lifecycle_event'] === 'test:live' || process.env['MEWSY_LIVE'] === '1';
+const invoked = process.env['npm_lifecycle_event'] === 'test:live' || MEWSY_LIVE_FROM_SHELL === '1';
 const readOnly = invoked && Boolean(URL_ && TOKEN);
 const posting = readOnly && CONFIRM;
 
@@ -159,7 +163,7 @@ describe.skipIf(!posting)('Hyperext sandbox — posting verification (G1/G2/G3/G
     const result = await client!.postJournal(netZeroJournal(longRef, 'x'.repeat(31)));
     if (result.outcome.kind === 'ok') {
       const header = await client!.findJournalByInvRef(longRef).catch(() => null)
-        ?? await client!.findJournalByInvRef(longRef, 'INV_REF').catch(() => null);
+        ?? await client!.findJournalByInvRef(longRef, 'invRef').catch(() => null); // camelCase fallback, like the G3 probe
       const stored = header?.details;
       note(`G6: 31-char details ACCEPTED${typeof stored === 'string' ? ` — stored as ${stored.length} chars` : ''} (docs say max 30; Mewsy truncates at 30 regardless)`);
     } else {

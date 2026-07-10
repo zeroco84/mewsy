@@ -94,7 +94,20 @@ export async function sendHeartbeat(
   runId: string,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<void> {
-  const target = ok ? url : `${url.replace(/\/+$/, '')}/fail`;
+  // `/fail` must extend the PATH — naive string append would land after any
+  // query string (`…?create=1/fail`) and register the failure as a success.
+  let target: string;
+  if (ok) {
+    target = url;
+  } else {
+    try {
+      const parsed = new URL(url);
+      parsed.pathname = `${parsed.pathname.replace(/\/+$/, '')}/fail`;
+      target = parsed.toString();
+    } catch {
+      target = `${url.replace(/\/+$/, '')}/fail`; // unparseable — best effort
+    }
+  }
   try {
     const res = await fetchFn(target, {
       method: 'POST',

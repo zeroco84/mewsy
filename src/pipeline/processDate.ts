@@ -19,6 +19,7 @@ import type {
   MewsPayment,
 } from '../mews/types.js';
 import {
+  checkPresenceInSage,
   lookupTranNumber,
   resolveAmbiguousOutcome,
   verifyInSage,
@@ -50,6 +51,7 @@ export type { SagePoster } from './readback.js';
 export type DateOutcomeKind =
   | 'POSTED' // posted and reconciled clean
   | 'POSTED_UNVERIFIED' // posted, but the post-hoc reconcile fetch failed
+  | 'NO_ACTIVITY' // zero Closed items and payments — nothing to post, date complete
   | 'SKIPPED_SAME' // already in Sage with identical content — reconciled
   | 'ADJUSTMENT_PENDING' // delta staged, awaiting approval
   | 'ADJUSTMENT_POSTED' // delta auto-posted (requireAdjustmentApproval=false)
@@ -145,6 +147,39 @@ async function postWithLedger(
   const { store, alert, runId } = deps;
   if (!deps.ha) throw new Error('Internal: postWithLedger called without a HyperAccounts client');
   const readback = property.hyperAccounts.readback;
+
+  // Pre-post guard: never post an invRef that is already in Sage. Catches a
+  // previous attempt that timed out but landed late (its read-back said
+  // "absent" a moment too early), and a mistaken `mewsy resolve --outcome
+  // failed` on a journal that actually exists. Read-back down ⇒ proceed
+  // (the ambiguous path still freezes if the post outcome is unknowable).
+  const preCheck = await checkPresenceInSage(deps.ha, invRef, readback);
+  if (preCheck.kind === 'present') {
+    const attempt = store.nextAttempt(property.code, businessDate, kind, seq);
+    const rowId = store.insertLedgerRow({
+      propertyCode: property.code,
+      businessDate,
+      kind,
+      seq,
+      attempt,
+      invRef,
+      status: 'POSTED',
+      contentHash,
+      lines,
+      totals,
+      journalDate,
+      note: `Found already in Sage by the pre-post read-back (${preCheck.count} header(s)) — not reposted`,
+    });
+    store.audit(runId, 'POST_PREEXISTING', { rowId, invRef, count: preCheck.count, tranNumber: preCheck.tranNumber }, property.code, businessDate);
+    store.updateLedgerStatus(rowId, 'POSTED', { sageTransactionRef: preCheck.tranNumber });
+    await alert.send(
+      'warn',
+      'POST_PREEXISTING',
+      `Journal ${invRef} is already in Sage (ref ${preCheck.tranNumber ?? 'n/a'}${preCheck.count > 1 ? `, ${preCheck.count} copies — investigate` : ''}) — recorded without reposting`,
+      { propertyCode: property.code, businessDate, ledgerRowId: rowId },
+    );
+    return { ok: true, kind: 'POSTED', invRef, sageTransactionRef: preCheck.tranNumber };
+  }
 
   const maxAttempts = 1 + property.journalRetries;
   for (let i = 0; i < maxAttempts; i++) {
@@ -381,6 +416,24 @@ export async function processDate(
   const postedRows = store.postedRows(property.code, businessDate);
   const postedLineSets = postedRows.map((r) => store.parseLines(r));
 
+  // A date with zero Closed items and payments is a legitimate no-activity
+  // day (closure night, pre-opening date): there is nothing to post — an
+  // empty splits[] would be rejected by HyperAccounts and wedge the
+  // watermark. If something WAS posted previously, fall through so the
+  // delta machinery raises the reversing adjustment instead.
+  if (journal.lines.length === 0 && postedRows.length === 0) {
+    report.reconciliation = { verified: true, deltaLineCount: 0, detail: 'No Closed activity for this date — nothing to post' };
+    if (mode === 'dry-run') {
+      report.outcome = 'DRY_RUN';
+      store.audit(runId, 'DRY_RUN', { detail: 'no activity' }, property.code, businessDate);
+      return { kind: 'DRY_RUN', advanceWatermark: false, report };
+    }
+    report.outcome = 'NO_ACTIVITY';
+    store.audit(runId, 'NO_ACTIVITY', { orderItemCount: 0, paymentCount: 0 }, property.code, businessDate);
+    store.resolveDeadLettersFor(property.code, businessDate);
+    return { kind: 'NO_ACTIVITY', advanceWatermark: true, report };
+  }
+
   if (mode === 'dry-run') {
     report.outcome = 'DRY_RUN';
     const delta = postedRows.length > 0 ? buildAdjustmentLines(postedLineSets, journal, businessDate) : null;
@@ -452,10 +505,35 @@ export async function processDate(
         { propertyCode: property.code, businessDate, detail: { rowId: stale.id } },
       );
     }
-    // The fetch that produced this build IS the reconciliation: Sage == Mews.
+    // The fetch that produced this build reconciles Mews against the LEDGER;
+    // Sage itself must also still hold exactly these journals (a mistakenly
+    // resolved-as-posted row, a journal edited/deleted in Sage, or a
+    // duplicate invRef must not reconcile clean — §8.2 holds every run).
+    let detail = 'Already posted with identical content';
+    if (deps.ha) {
+      const verification = await verifyInSage(
+        deps.ha,
+        postedRows.map((r) => ({ invRef: r.inv_ref, lines: store.parseLines(r) })),
+        property.hyperAccounts.readback,
+      );
+      if (verification.kind === 'mismatch') {
+        report.outcome = 'VARIANCE';
+        report.reconciliation = { verified: false, deltaLineCount: 0, detail: verification.detail };
+        store.audit(runId, 'VARIANCE', { detail: verification.detail }, property.code, businessDate);
+        store.deadLetter(runId, property.code, businessDate, 'Sage-side reconciliation variance', { detail: verification.detail });
+        await alert.send('error', 'VARIANCE', `${verification.detail} — watermark held (spec §8.2)`, {
+          propertyCode: property.code,
+          businessDate,
+        });
+        return { kind: 'VARIANCE', advanceWatermark: false, report };
+      }
+      detail += verification.kind === 'verified'
+        ? `; ${verification.detail}`
+        : `; ${verification.detail} — verified against the local ledger only`;
+    }
     report.outcome = 'SKIPPED_SAME';
-    report.reconciliation = { verified: true, deltaLineCount: 0, detail: 'Already posted with identical content' };
-    store.audit(runId, 'SKIPPED_SAME', { contentHash }, property.code, businessDate);
+    report.reconciliation = { verified: true, deltaLineCount: 0, detail };
+    store.audit(runId, 'SKIPPED_SAME', { contentHash, detail }, property.code, businessDate);
     store.resolveDeadLettersFor(property.code, businessDate);
     return { kind: 'SKIPPED_SAME', advanceWatermark: true, report };
   }

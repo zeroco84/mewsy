@@ -218,6 +218,35 @@ describe('buildDayJournal — corrections and edge cases', () => {
     expect(under.journal).not.toBeNull();
     expect(under.journal!.lines.some((l) => l.kind === 'SUSPENSE')).toBe(true);
   });
+
+  it('percent materiality still bites on refund-heavy (negative revenue) days', () => {
+    // Regression: `revenueBase > 0` silently disabled the percent limit
+    // exactly when a day was refund-heavy.
+    const property = makeProperty({ suspenseMaterialityPercent: 2 });
+    const categories = [makeCategory('cat-acc', 'Accommodation', '4000')];
+    const orderItems = [makeItem('cat-acc', -500, 'IE-R1', -67.5)]; // mass cancellation
+    const payments = [makePayment(-200)]; // partial refunds only → big imbalance
+    const { journal, blockers } = buildDayJournal({ property, businessDate: DATE, orderItems, payments, categoriesById: categoriesById(categories) });
+    expect(journal).toBeNull();
+    expect(blockers.some((b) => b.includes('materiality'))).toBe(true);
+  });
+
+  it('a blocked day emits no phantom imbalance warning from the partial line set', () => {
+    // Regression: an unmapped-tax item was excluded, then the imbalance
+    // section ran on the remaining lines and warned about routing a phantom
+    // figure to suspense although nothing posts on a blocked day.
+    const property = makeProperty();
+    const categories = [makeCategory('cat-acc', 'Accommodation', '4000')];
+    const orderItems = [
+      makeItem('cat-acc', 100, 'IE-WAT', 13.5), // unmapped tax code → blocker + excluded
+      makeItem('cat-acc', 200, 'IE-R1', 27),
+    ];
+    const payments = [makePayment(340.5)]; // the real day balances exactly
+    const { journal, blockers, warnings } = buildDayJournal({ property, businessDate: DATE, orderItems, payments, categoriesById: categoriesById(categories) });
+    expect(journal).toBeNull();
+    expect(blockers.some((b) => b.includes('IE-WAT'))).toBe(true);
+    expect(warnings.filter((w) => w.includes('imbalance'))).toEqual([]);
+  });
 });
 
 describe('idempotency hash + adjustment delta (spec §8.1/8.3)', () => {

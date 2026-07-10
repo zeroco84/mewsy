@@ -135,4 +135,27 @@ describe('HyperAccountsClient', () => {
     const client2 = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 't', fetchFn: emptyFetch });
     expect(await client2.findJournalByInvRef('NOPE')).toBeNull();
   });
+
+  it('treats a success:false search envelope as an ERROR, never as zero rows', async () => {
+    // Regression: a failing search that answered 200 {success:false} was read
+    // as "journal absent — safe to retry", authorising a double-post.
+    const fetchFn: FetchFn = async () => jsonResponse({ success: false, code: 500, message: 'SDO not connected' });
+    const client = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 't', fetchFn });
+    await expect(client.findJournalsByInvRef('MEWSY-REV-PROP1-20260701')).rejects.toThrow(/search .* failed/);
+
+    const weirdFetch: FetchFn = async () => jsonResponse({ hello: 'world' });
+    const client2 = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 't', fetchFn: weirdFetch });
+    await expect(client2.searchSplits([{ field: 'HEADER_NUMBER', type: 'eq', value: 1 }])).rejects.toThrow(/unrecognised/);
+  });
+
+  it('returns every header for a duplicated invRef (double-post visibility)', async () => {
+    const fetchFn: FetchFn = async () =>
+      jsonResponse([
+        { invRef: 'X', tranNumber: 1, headerNumber: 10 },
+        { invRef: 'X', tranNumber: 2, headerNumber: 11 },
+      ]);
+    const client = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 't', fetchFn });
+    const headers = await client.findJournalsByInvRef('X');
+    expect(headers).toHaveLength(2);
+  });
 });

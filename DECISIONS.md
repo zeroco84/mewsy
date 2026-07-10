@@ -136,6 +136,17 @@ A multi-agent adversarial review (6 parallel finders over functional dimensions,
 6. **Webhook alert failures were invisible** — non-2xx responses were treated as delivered, and the payload wasn't renderable by Slack/Teams. The response status is now checked and logged, and the payload carries a `text` field.
 7. **`mewsy status` derived its "uncertain Sage state" warning from only the 12 most recent ledger rows**, so an old unresolved UNKNOWN attempt eventually disappeared from monitoring. It now queries all UNKNOWN/ATTEMPTING rows.
 
+### Second review round (post read-back/policy changes, 10 Jul 2026)
+
+A second multi-agent adversarial review over the code added since round one confirmed twelve findings, all fixed with regression tests. The theme: *the read-back could certify things it never actually checked.*
+
+1. **Duplicate invRefs were invisible** — only the first audit header was ever inspected, so the timeout→"absent"→repost race could double-post a day with every control green. `verifyInSage` now requires each Mewsy invRef to appear in Sage **exactly once**, and a **pre-post read-back guard** refuses to post any invRef already present (also covering a mistaken `resolve --outcome failed`).
+2. **`SKIPPED_SAME` never verified Sage-side** — a mistakenly resolved-as-posted row (journal not actually in Sage) reconciled clean forever, and a VARIANCE held the watermark for exactly one run. The skip path now runs the full Sage verification every time; `mewsy resolve` additionally accepts POSTED→failed to correct a mistaken resolve.
+3. **Zero-activity dates wedged the watermark** — an empty day built `splits: []`, which the vendor contract rejects, permanently blocking the property (relevant to pre-opening dates). Empty days now complete as `NO_ACTIVITY` without posting.
+4. **A failing search that answered `200 {success:false}` read as "zero rows"** — turning a broken read-back into a false "absent — safe to retry". Search responses are now strict: application-error envelopes and unrecognised shapes throw (⇒ freeze), never "absent". (Live zero-match shape re-verified against the sandbox: rows arrive under `results`.)
+5. **`vat-spike` re-runs double-posted** the same deterministic invRef; it now refuses when the ledger or Sage already holds it.
+6. Percent materiality was silently disabled on zero/negative-revenue days (now uses the revenue magnitude; with zero revenue any non-rounding imbalance blocks); blocked days emitted phantom imbalance warnings from partial line sets (imbalance/suspense logic now runs only on complete days); a stale-lock reclaim race could leave two processes holding the lock (atomic rename reclaim); heartbeat `/fail` landed after query strings (URL-aware now); `validate -p <unknown>` passed silently with zero checks (now errors like `run`); and the live suite's G6 fallback probe was dead code (now genuinely tries the camelCase column).
+
 ## 7. Known simplifications (acceptable for Phase 0/1, revisit later)
 
 - ~~`mewsy validate` can't yet verify nominal codes exist in the Sage chart of accounts~~ **Closed:** `validate` now reads `/api/status`, `/api/nominal/` and `/api/taxCode` and errors when a configured/mapped nominal is missing or inactive, a Sage tax code doesn't exist, or a Sage rate differs from the configured `ratePercent`.

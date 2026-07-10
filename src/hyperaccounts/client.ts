@@ -145,7 +145,13 @@ export class HyperAccountsClient {
     return { outcome, rawResponse };
   }
 
-  /** Filter-array search; reads are idempotent so transient failures retry. */
+  /**
+   * Filter-array search; reads are idempotent so transient failures retry.
+   * STRICT on the response shape: this vendor reports application errors as
+   * 2xx `{success:false, ...}` envelopes, and a failed search must surface as
+   * an error (read-back "unavailable" → freeze), never as "zero rows" — a
+   * false "absent" answer would authorise a repost and a double-post.
+   */
   private async search<T>(path: string, filters: SearchFilter[]): Promise<T[]> {
     const response = await idempotentJsonRequest(this.url(path), {
       method: 'POST',
@@ -157,13 +163,17 @@ export class HyperAccountsClient {
     });
     if (Array.isArray(response)) return response as T[];
     if (response !== null && typeof response === 'object') {
+      const record = response as Record<string, unknown>;
+      if (record['success'] === false) {
+        throw new Error(`HyperAccounts search ${path} failed: ${JSON.stringify(response).slice(0, 300)}`);
+      }
       // Envelope shape not pinned down by the reference — accept common keys.
       for (const key of ['response', 'data', 'results', 'rows', 'headers', 'splits']) {
-        const value = (response as Record<string, unknown>)[key];
+        const value = record[key];
         if (Array.isArray(value)) return value as T[];
       }
     }
-    return [];
+    throw new Error(`HyperAccounts search ${path} returned an unrecognised response shape: ${JSON.stringify(response)?.slice(0, 200)}`);
   }
 
   async searchAuditHeaders(filters: SearchFilter[]): Promise<AuditHeader[]> {
@@ -175,13 +185,18 @@ export class HyperAccountsClient {
   }
 
   /**
-   * Look a journal up by its idempotency key (G3). Searchable columns use
-   * raw Sage names (verified live: INV_REF, not the camelCase response name);
-   * configurable via hyperAccounts.readback.invRefField.
+   * ALL journals carrying an idempotency key (G3). Mewsy keys are unique by
+   * construction, so more than one match means a double-post is sitting in
+   * Sage — callers must be able to see that. Searchable columns use raw Sage
+   * names (verified live: INV_REF); configurable via readback.invRefField.
    */
+  async findJournalsByInvRef(invRef: string, field = 'INV_REF'): Promise<AuditHeader[]> {
+    return await this.searchAuditHeaders([{ field, type: 'eq', value: invRef }]);
+  }
+
+  /** First match convenience (live suite / probes) — prefer the plural form in controls. */
   async findJournalByInvRef(invRef: string, field = 'INV_REF'): Promise<AuditHeader | null> {
-    const headers = await this.searchAuditHeaders([{ field, type: 'eq', value: invRef }]);
-    return headers[0] ?? null;
+    return (await this.findJournalsByInvRef(invRef, field))[0] ?? null;
   }
 
   private async getJson(path: string): Promise<unknown> {

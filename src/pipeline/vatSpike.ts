@@ -3,7 +3,7 @@ import type { PropertyConfig } from '../config.js';
 import { buildVatSpikeLines, toHyperAccountsJournal, vatSpikeInvRef, journalContentHash } from '../domain/journal.js';
 import type { Store } from '../store/store.js';
 import { AmbiguousWriteError } from '../util/http.js';
-import { lookupTranNumber, resolveAmbiguousOutcome, type SagePoster } from './readback.js';
+import { checkPresenceInSage, lookupTranNumber, resolveAmbiguousOutcome, type SagePoster } from './readback.js';
 
 /**
  * Phase 0 VAT-return spike (spec §9): post one small journal carrying every
@@ -35,6 +35,28 @@ export async function runVatSpike(input: {
 
   if (!input.ha) {
     return { posted: false, preview, message: 'Preview only — re-run with --yes to post this journal to Sage.' };
+  }
+
+  // The spike invRef is deterministic per property+date and the server
+  // accepts duplicates (G2) — refuse a re-run that would double-post.
+  const alreadyPosted = store
+    .rowsForDate(property.code, date)
+    .find((r) => r.inv_ref === invRef && r.status === 'POSTED');
+  if (alreadyPosted) {
+    return {
+      posted: false,
+      preview,
+      message: `${invRef} was already posted on this date (ledger row #${alreadyPosted.id}, Sage ref ${alreadyPosted.sage_transaction_ref ?? 'n/a'}). ` +
+        (reverse ? 'The reversal exists — nothing to do.' : `To back it out: add --reverse; to run another spike, use a different --date.`),
+    };
+  }
+  const presence = await checkPresenceInSage(input.ha, invRef, property.hyperAccounts.readback);
+  if (presence.kind === 'present') {
+    return {
+      posted: false,
+      preview,
+      message: `${invRef} already exists in Sage (${presence.count} header(s), ref ${presence.tranNumber ?? 'n/a'}) — refusing to post it again. Use a different --date for a fresh spike.`,
+    };
   }
 
   const seq = store.nextSeq(property.code, date, 'VAT_SPIKE');

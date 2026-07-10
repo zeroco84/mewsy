@@ -315,6 +315,13 @@ export function buildDayJournal(input: {
   const revenueTaxCents = -revenueLines.reduce((s, l) => s + l.taxCents, 0);
   const paymentsCents = paymentLines.reduce((s, l) => s + l.netCents, 0);
 
+  // Any blocker means `lines` is a PARTIAL set (blocked items were excluded),
+  // so an imbalance computed from it is a phantom figure — suspense routing,
+  // materiality checks and their warnings/alerts must not run on it.
+  if (blockers.length > 0) {
+    return { journal: null, blockers, warnings };
+  }
+
   const signedSum = lines.reduce((s, l) => s + l.netCents + l.taxCents, 0);
   const imbalanceCents = signedSum;
 
@@ -323,14 +330,16 @@ export function buildDayJournal(input: {
     const isRounding = Math.abs(imbalanceCents) <= property.roundingToleranceCents;
 
     // D7 (response §3): a large suspense line means something upstream broke —
-    // posting it is worse than not posting. Block above materiality.
+    // posting it is worse than not posting. Block above materiality. The
+    // percent limit uses the MAGNITUDE of day revenue so it still bites on
+    // refund-heavy (negative) days; with zero revenue any non-rounding
+    // imbalance exceeds the percent limit ("above EITHER limit blocks").
     const absImbalance = Math.abs(imbalanceCents);
-    const revenueBase = revenueNetCents + revenueTaxCents;
+    const revenueMagnitude = Math.abs(revenueNetCents + revenueTaxCents);
     const breachesAbsolute = property.suspenseMaterialityCents !== null && absImbalance > property.suspenseMaterialityCents;
     const breachesPercent =
       property.suspenseMaterialityPercent !== null &&
-      revenueBase > 0 &&
-      absImbalance > (revenueBase * property.suspenseMaterialityPercent) / 100;
+      absImbalance > (revenueMagnitude * property.suspenseMaterialityPercent) / 100;
     if (!isRounding && (breachesAbsolute || breachesPercent)) {
       blockers.push(
         `Day imbalance ${formatEur(imbalanceCents)} exceeds the suspense materiality limit (${[
@@ -358,6 +367,8 @@ export function buildDayJournal(input: {
     }
   }
 
+  // A materiality breach above is the only blocker that can appear past the
+  // partial-set gate — nothing was posted to `lines` for it, so return now.
   if (blockers.length > 0) {
     return { journal: null, blockers, warnings };
   }

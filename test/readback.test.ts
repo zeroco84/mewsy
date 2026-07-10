@@ -55,6 +55,17 @@ describe('verifyInSage', () => {
     expect(result.detail).toContain('not found');
   });
 
+  it('flags a duplicated invRef in Sage as a mismatch (double-post detection)', async () => {
+    // Regression: the server accepts duplicate invRefs (G2); a repost race
+    // used to be invisible because only headers[0] was ever inspected.
+    const ha = new FakeHa();
+    postedJournal(ha, 'MEWSY-REV-PROP1-20260701');
+    postedJournal(ha, 'MEWSY-REV-PROP1-20260701'); // the duplicate
+    const result = await verifyInSage(ha, [{ invRef: 'MEWSY-REV-PROP1-20260701', lines: LINES }], RB);
+    expect(result.kind).toBe('mismatch');
+    expect(result.detail).toContain('2 times');
+  });
+
   it('flags diverging split amounts as a mismatch', async () => {
     const ha = new FakeHa();
     postedJournal(ha, 'MEWSY-REV-PROP1-20260701');

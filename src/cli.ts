@@ -8,9 +8,11 @@ import { loadConfig, requireEnv, type MewsyConfig, type PropertyConfig } from '.
 import { acquireLock } from './util/lock.js';
 import { HyperAccountsClient } from './hyperaccounts/client.js';
 import { MewsClient } from './mews/client.js';
+import type { MewsAccountingCategory } from './mews/types.js';
 import { approveAdjustment, rejectAdjustment } from './pipeline/adjustments.js';
 import { renderDateReport, renderLines, writeRunReports } from './pipeline/report.js';
 import { runPipeline, resolvePostingDelay } from './pipeline/run.js';
+import { sageReferenceChecks } from './pipeline/validateSage.js';
 import { runVatSpike } from './pipeline/vatSpike.js';
 import { openDb } from './store/db.js';
 import { Store } from './store/store.js';
@@ -175,6 +177,7 @@ program
 
     for (const property of properties) {
       console.log(`\n── ${property.code} (${property.name}) ──`);
+      let activeCategories: MewsAccountingCategory[] = [];
 
       for (const envName of [ctx.config.mews.clientTokenEnv, property.mewsAccessTokenEnv, property.hyperAccounts.authTokenEnv]) {
         if (!process.env[envName]) {
@@ -197,6 +200,7 @@ program
           }
           const categories = await mews.getAccountingCategories();
           const active = categories.filter((c) => c.IsActive);
+          activeCategories = active;
           const field = property.ledgerCodeField;
           const missing = active.filter((c) => !(field === 'PostingAccountCode' ? c.PostingAccountCode : c.LedgerAccountCode)?.trim());
           const tooLong = active.filter((c) => ((field === 'PostingAccountCode' ? c.PostingAccountCode : c.LedgerAccountCode)?.trim().length ?? 0) > 8);
@@ -223,9 +227,17 @@ program
       if (Object.keys(property.taxCodeMap).length === 0) problems++;
 
       if (process.env[property.hyperAccounts.authTokenEnv]) {
-        const probe = await haFactory(property).probe();
+        const ha = haFactory(property);
+        const probe = await ha.probe();
         console.log(`  ${probe.reachable ? '✓' : '✗'} HyperAccounts ${property.hyperAccounts.baseUrl}: ${probe.detail}`);
         if (!probe.reachable) problems++;
+        else {
+          // Cross-check configured/mapped nominals + tax codes against the
+          // live Sage reference data (spec §10; closes DECISIONS §7 gap).
+          const sage = await sageReferenceChecks(ha, property, activeCategories);
+          for (const line of sage.lines) console.log(`  ${line}`);
+          problems += sage.problems;
+        }
       }
     }
 

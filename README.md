@@ -42,11 +42,16 @@ Secrets live only in the environment (or `.env`); `config/mewsy.json` refers to 
 **Phase 0 — de-risk & set up**
 
 ```bash
-mewsy validate                    # config, tokens, Mews connectivity, ledger-code completeness (§10), HA reachability
+mewsy validate                    # config, tokens, Mews connectivity, ledger-code completeness (§10),
+                                  # + live Sage cross-checks: nominals exist/active, tax codes exist, rates match
 mewsy vat-spike --property PROP1 --revenue-nominal 9998 --yes    # §9: post one journal at every VAT rate…
 #   …then run the Sage 50 (Ireland) VAT3 return and confirm each rate lands in the right box.
 mewsy vat-spike --property PROP1 --revenue-nominal 9998 --reverse --yes  # back the test out
+
+npm run test:live                 # instance verification against your HyperAccounts sandbox (see below)
 ```
+
+**Live sandbox verification.** The vendor documents no hosted sandbox — the "sandbox" is your own HyperAccounts install pointed at a **test** Sage company (reach it on the box or over the tunnel). `npm run test:live` is gated on env vars (`HYPERACCOUNTS_LIVE_URL`, `HYPERACCOUNTS_LIVE_TOKEN`, and `HYPERACCOUNTS_LIVE_CONFIRM=post-test-journals` for the posting checks — see `.env.example`) and prints a verification report that answers the open instance questions in [DECISIONS.md](DECISIONS.md) §8 empirically: response schema (G1), duplicate-invRef behaviour (G2), the searchable invRef column name (G3 — it tries `invRef` then `INV_REF` and tells you which to configure), auth (G4), and the details length limit (G6). Posting checks use only tiny **net-zero** journals (1-cent debit + credit on one nominal, invRefs `MEWSY-LT-*`), and the suite prints the company name first so you can confirm you're on the test dataset. It never runs in CI.
 
 **Phase 1 — read & reconcile (no posting)**
 

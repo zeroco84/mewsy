@@ -58,8 +58,34 @@ export interface MockHyperAccounts {
     ambiguousLands: boolean;
     /** Search endpoints return 500 (read-back down → UNKNOWN freeze path). */
     searchDown: boolean;
+    /** Reference data served by /api/nominal/ and /api/taxCode — mutable per test. */
+    nominals: Array<{ accountRef: string; name: string; type: number; balance: number; inactiveFlag: number }>;
+    taxCodes: Array<{ index: number; description: string; rate: number }>;
+    companyName: string;
   };
   close(): Promise<void>;
+}
+
+/** Default Irish-flavoured reference data matching config/mewsy.example.json. */
+function defaultReferenceData() {
+  return {
+    nominals: ['1100', '1200', '1210', '1215', '2205', '4000', '4001', '4002', '9998', '9999'].map((ref) => ({
+      accountRef: ref,
+      name: `Nominal ${ref}`,
+      type: 1,
+      balance: 0,
+      inactiveFlag: 0,
+    })),
+    taxCodes: [
+      { index: 0, description: 'Zero rated', rate: 0 },
+      { index: 1, description: 'Standard rate', rate: 23 },
+      { index: 2, description: 'Exempt transactions', rate: 0 },
+      { index: 3, description: 'Reduced rate', rate: 13.5 },
+      { index: 5, description: 'Second reduced rate', rate: 9 },
+      { index: 9, description: 'Non-Vatable Tax Code', rate: 0 },
+    ],
+    companyName: 'MOCK SANDBOX CO',
+  };
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
@@ -109,7 +135,12 @@ type Filter = { field: string; type: string; value: unknown };
 
 export async function startMockHyperAccounts(authToken = 'mock-ha-token'): Promise<MockHyperAccounts> {
   const journals: MockJournalRecord[] = [];
-  const state: MockHyperAccounts['state'] = { failureMode: 'none', ambiguousLands: false, searchDown: false };
+  const state: MockHyperAccounts['state'] = {
+    failureMode: 'none',
+    ambiguousLands: false,
+    searchDown: false,
+    ...defaultReferenceData(),
+  };
   let tranCounter = 90000;
   const sockets = new Set<Socket>();
 
@@ -117,7 +148,23 @@ export async function startMockHyperAccounts(authToken = 'mock-ha-token'): Promi
     const body = await readBody(req);
     const url = req.url ?? '';
 
-    if (req.method === 'GET') return json(res, 200, { ok: true });
+    if (req.method === 'GET') {
+      // Reference endpoints (vendor API reference shapes) — authenticated.
+      if (url.startsWith('/api/') && req.headers['authtoken'] !== authToken) {
+        return json(res, 401, { success: false, code: 401, message: 'invalid AuthToken' });
+      }
+      if (url === '/api/status') {
+        return json(res, 200, {
+          success: true,
+          code: 200,
+          response: { apiVersion: '1.23.0.0', sageVersion: '31.1', companyName: state.companyName, sdoStatusOk: true, odbcStatusOk: true },
+          message: '',
+        });
+      }
+      if (url === '/api/taxCode') return json(res, 200, { results: state.taxCodes });
+      if (url === '/api/nominal/' || url === '/api/nominal') return json(res, 200, { results: state.nominals });
+      return json(res, 200, { ok: true }); // probe
+    }
     if (req.headers['authtoken'] !== authToken) return json(res, 401, { success: false, code: 401, message: 'invalid AuthToken' });
 
     let parsed: unknown;
@@ -210,7 +257,11 @@ export async function startMockHyperAccounts(authToken = 'mock-ha-token'): Promi
     close: () =>
       new Promise<void>((resolve, reject) => {
         for (const socket of sockets) socket.destroy(); // frees blackholed requests
-        server.close((err) => (err ? reject(err) : resolve()));
+        server.close((err) => {
+          // Idempotent: a second close (test + afterEach) is not an error.
+          if (err && (err as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') reject(err);
+          else resolve();
+        });
       }),
   };
 }

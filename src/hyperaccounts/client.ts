@@ -70,6 +70,34 @@ export interface AuditSplit {
   [key: string]: unknown;
 }
 
+/** GET /api/status response payload (vendor API reference). */
+export interface ApiStatus {
+  apiVersion?: string;
+  sageVersion?: string;
+  companyName?: string;
+  sdoStatusOk?: boolean;
+  odbcStatusOk?: boolean;
+  [key: string]: unknown;
+}
+
+/** A row of GET /api/taxCode (vendor API reference). */
+export interface SageTaxCode {
+  index: number;
+  description?: string;
+  rate: number;
+  [key: string]: unknown;
+}
+
+/** A row of GET /api/nominal/ (vendor API reference). */
+export interface SageNominal {
+  accountRef: string;
+  name?: string;
+  type?: number;
+  balance?: number;
+  inactiveFlag?: number;
+  [key: string]: unknown;
+}
+
 export interface HyperAccountsClientOptions {
   baseUrl: string;
   authToken: string;
@@ -153,6 +181,45 @@ export class HyperAccountsClient {
   async findJournalByInvRef(invRef: string, field = 'invRef'): Promise<AuditHeader | null> {
     const headers = await this.searchAuditHeaders([{ field, type: 'eq', value: invRef }]);
     return headers[0] ?? null;
+  }
+
+  private async getJson(path: string): Promise<unknown> {
+    return await idempotentJsonRequest(this.url(path), {
+      method: 'GET',
+      headers: { AuthToken: this.opts.authToken },
+      timeoutMs: this.opts.timeoutMs ?? 30_000,
+      retries: 2,
+      fetchFn: this.opts.fetchFn,
+    });
+  }
+
+  private static unwrapResults<T>(response: unknown): T[] {
+    if (Array.isArray(response)) return response as T[];
+    if (response !== null && typeof response === 'object') {
+      const results = (response as Record<string, unknown>)['results'];
+      if (Array.isArray(results)) return results as T[];
+    }
+    return [];
+  }
+
+  /** GET /api/status → { apiVersion, sageVersion, companyName, sdoStatusOk, odbcStatusOk }. */
+  async getStatus(): Promise<ApiStatus | null> {
+    const body = await this.getJson('/api/status');
+    if (body !== null && typeof body === 'object') {
+      const inner = (body as Record<string, unknown>)['response'];
+      if (inner !== null && typeof inner === 'object') return inner as ApiStatus;
+    }
+    return null;
+  }
+
+  /** GET /api/taxCode → the Sage tax-code table (index, description, rate). */
+  async getTaxCodes(): Promise<SageTaxCode[]> {
+    return HyperAccountsClient.unwrapResults<SageTaxCode>(await this.getJson('/api/taxCode'));
+  }
+
+  /** GET /api/nominal/ → the nominal ledger (accountRef, name, type, balance, inactiveFlag). */
+  async getNominals(): Promise<SageNominal[]> {
+    return HyperAccountsClient.unwrapResults<SageNominal>(await this.getJson('/api/nominal/'));
   }
 
   /** Cheap reachability probe for `mewsy validate` — any HTTP response counts. */

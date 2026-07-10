@@ -138,7 +138,7 @@ A multi-agent adversarial review (6 parallel finders over functional dimensions,
 
 ## 7. Known simplifications (acceptable for Phase 0/1, revisit later)
 
-- `mewsy validate` can't yet verify nominal codes exist in the Sage chart of accounts; the first rejected journal surfaces a bad code instead. (The vendor's search API may allow a nominal-ledger lookup — worth checking while confirming G4/G5.)
+- ~~`mewsy validate` can't yet verify nominal codes exist in the Sage chart of accounts~~ **Closed:** `validate` now reads `/api/status`, `/api/nominal/` and `/api/taxCode` and errors when a configured/mapped nominal is missing or inactive, a Sage tax code doesn't exist, or a Sage rate differs from the configured `ratePercent`.
 - The Mews `Currency` filter is not sent on getAll calls (EUR is asserted per item instead).
 - Sage-side split comparison uses per-nominal sums of absolute net/tax (sign conventions of `AUDIT_SPLIT` unverified); rows without the expected fields degrade to header-presence verification.
 - Timestamps in ledger/audit use the host clock (`new Date()`); the Sage box should run NTP (see docs/OPERATIONS.md).
@@ -162,10 +162,12 @@ A multi-agent adversarial review (6 parallel finders over functional dimensions,
 
 **Still open, in sequence order:**
 
+> **Instance verification is automated:** `npm run test:live` against the sandbox (your HyperAccounts install + a test Sage company — the vendor documents no hosted sandbox; the `ariel.hyperext.com:30000` host in the API reference is a stray docs example with no credentials) empirically answers G1, G2, the G3 column name, G4 and G6 and prints a report. See README → "Live sandbox verification".
+
 | Item | What | When |
 |---|---|---|
 | G8 | VAT-return mechanism spike (`mewsy vat-spike`) — **do this first**; a failure forces a posting-path redesign | Now |
-| G4 | Confirm AuthToken header (very likely), port, http/https on the instance | Now |
+| G4 | Confirm AuthToken header (very likely), port, http/https on the instance — `npm run test:live` answers this | Now |
 | G5 | One HyperAccounts per Sage company? Ask the vendor; not blocking (single property at go-live) | Now |
 | G9/G11/G13/G14 | Mews endpoint/filter/tax-code/tender verification against a demo enterprise | Now |
 | G12/F5/F10 | Deposits: deferred-revenue + debtors nominals so suspense only holds the unexplained — **decide before Phase 2**; size via deposit-heavy Phase 1 dry-runs | Urgent |

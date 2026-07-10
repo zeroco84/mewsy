@@ -162,7 +162,7 @@ A multi-agent adversarial review (6 parallel finders over functional dimensions,
 
 **Still open, in sequence order:**
 
-> **Instance verification is automated:** `npm run test:live` against the sandbox (your HyperAccounts install + a test Sage company — the vendor documents no hosted sandbox; the `ariel.hyperext.com:30000` host in the API reference is a stray docs example with no credentials) empirically answers G1, G2, the G3 column name, G4 and G6 and prints a report. See README → "Live sandbox verification".
+> **Instance verification is automated:** `npm run test:live` empirically answers G1, G2, the G3 column name, G4 and G6 and prints a report. Two valid targets: **Hyperext's free shared sandbox** (provided by support on request — the host in their public docs answers; credentials arrive by email; being shared, run only this suite against it) or your own HyperAccounts install with a test Sage company. The `AuthToken` header name is additionally confirmed by the public Postman collection's auth config (G4). The Irish specifics — VAT3 behaviour (G8) and rate checks — still require your own instance: the shared sandbox is another company's dataset and its Sage VAT return isn't accessible. See README → "Live sandbox verification".
 
 | Item | What | When |
 |---|---|---|

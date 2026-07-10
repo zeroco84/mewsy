@@ -158,7 +158,13 @@ A multi-agent adversarial review (6 parallel finders over functional dimensions,
 
 **Confirmed as built (no change):** D1, D2, D5 (keep approval through parallel run), D6 (detection-dating; finance to confirm VAT treatment of prior-period adjustments on the next VAT3), D9, D10, D11 (non-EUR block is policy — Sage itself supports FX), D12, D13, D14, D16, and D3 with the schedule fixed at **04:00 `Europe/Dublin`** (see docs/OPERATIONS.md).
 
-**Downgraded:** G2 (duplicate `invRef` behaviour) is a footnote now that check-then-post exists — still worth observing once on the real instance.
+**Verified live against the vendor shared sandbox** ("FREE SANDBOX CO", Sage 32.1, API 1.27.5.0, 10 Jul 2026 — access provided by Hyperext support; re-confirm once on our own instance pre-go-live):
+
+- **G4 CLOSED** — `AuthToken` header accepted over HTTPS on the shared sandbox host; also confirmed by the public Postman collection's auth config.
+- **G1 verified live** — `/api/journal` response is byte-for-byte the documented `{success, code, response, message}` shape (typos included), no transaction number.
+- **G3 verified live, with corrections now baked into defaults** — searchable filter fields use **raw Sage column names** while responses are camelCase: headers by **`INV_REF`** (camelCase `invRef` silently matches nothing), splits by **`HEADER_NUMBER`**. `tranNumber` and `headerNumber` come back on headers; split rows carry `nominalCode`/`netAmount`/`taxAmount` (full split comparison **viable**), and `type` returns as the string `"JD"`/`"JC"`, not the posted integer. Config defaults updated (`readback.invRefField: "INV_REF"`, `readback.splitLinkField: "HEADER_NUMBER"`).
+- **G2 CLOSED** — a duplicate `invRef` is **accepted**: the server provides no idempotency backstop. Mewsy's posting ledger + read-back-before-retry remain the only guard, exactly as designed.
+- **G6 refined** — a 31-char `details` value was **accepted and stored at 31 chars**: the documented max-30 is not server-enforced (at that length). Mewsy keeps its 30-char truncation as the safe contract.
 
 **Still open, in sequence order:**
 
@@ -166,8 +172,7 @@ A multi-agent adversarial review (6 parallel finders over functional dimensions,
 
 | Item | What | When |
 |---|---|---|
-| G8 | VAT-return mechanism spike (`mewsy vat-spike`) — **do this first**; a failure forces a posting-path redesign | Now |
-| G4 | Confirm AuthToken header (very likely), port, http/https on the instance — `npm run test:live` answers this | Now |
+| G8 | VAT-return mechanism spike (`mewsy vat-spike`) — **do this first on our own instance**; a failure forces a posting-path redesign (not answerable on the shared sandbox — no access to its Sage VAT return) | Now |
 | G5 | One HyperAccounts per Sage company? Ask the vendor; not blocking (single property at go-live) | Now |
 | G9/G11/G13/G14 | Mews endpoint/filter/tax-code/tender verification against a demo enterprise | Now |
 | G12/F5/F10 | Deposits: deferred-revenue + debtors nominals so suspense only holds the unexplained — **decide before Phase 2**; size via deposit-heavy Phase 1 dry-runs | Urgent |

@@ -29,6 +29,7 @@ export interface SagePoster {
 export interface ReadbackConfig {
   enabled: boolean;
   invRefField: string;
+  splitLinkField: string;
   compareSplits: boolean;
 }
 
@@ -99,7 +100,7 @@ export async function verifyInSage(
       }
       if (!readback.compareSplits || header.headerNumber === undefined || header.headerNumber === null) continue;
 
-      const splits = await ha.searchSplits([{ field: 'headerNumber', type: 'eq', value: header.headerNumber }]);
+      const splits = await ha.searchSplits([{ field: readback.splitLinkField, type: 'eq', value: header.headerNumber }]);
       const usable = splits.filter((s) => typeof s.nominalCode === 'string' && typeof s.netAmount === 'number');
       if (splits.length === 0 || usable.length !== splits.length) continue; // shape not as expected — header check only
 

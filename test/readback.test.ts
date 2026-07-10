@@ -3,7 +3,7 @@ import { resolveAmbiguousOutcome, verifyInSage, type ReadbackConfig } from '../s
 import type { JournalLine } from '../src/domain/journal.js';
 import { FakeHa } from './helpers.js';
 
-const RB: ReadbackConfig = { enabled: true, invRefField: 'invRef', compareSplits: true };
+const RB: ReadbackConfig = { enabled: true, invRefField: 'INV_REF', splitLinkField: 'HEADER_NUMBER', compareSplits: true };
 
 const LINES: JournalLine[] = [
   { nominalCode: '4000', details: 'Accommodation', kind: 'REVENUE', netCents: -900000, taxCents: -121500, sageTaxCode: 3 },

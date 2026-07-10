@@ -107,7 +107,7 @@ describe('HyperAccountsClient', () => {
     );
   });
 
-  it('searches auditHeaders by invRef with the filter-array grammar (G3)', async () => {
+  it('searches auditHeaders by INV_REF with the filter-array grammar (G3, verified live)', async () => {
     let captured: { url: string; body: unknown } | null = null;
     const fetchFn: FetchFn = async (url, init) => {
       captured = { url: String(url), body: JSON.parse(String(init?.body)) };
@@ -116,12 +116,13 @@ describe('HyperAccountsClient', () => {
     const client = new HyperAccountsClient({ baseUrl: 'http://localhost:5000', authToken: 't', fetchFn });
     const header = await client.findJournalByInvRef('MEWSY-REV-PROP1-20260701');
     expect(captured!.url).toBe('http://localhost:5000/api/search/auditHeaders');
-    expect(captured!.body).toEqual([{ field: 'invRef', type: 'eq', value: 'MEWSY-REV-PROP1-20260701' }]);
+    // Default field is the raw Sage column name, confirmed on the vendor sandbox.
+    expect(captured!.body).toEqual([{ field: 'INV_REF', type: 'eq', value: 'MEWSY-REV-PROP1-20260701' }]);
     expect(header).toMatchObject({ tranNumber: 4211, headerNumber: 88 });
 
-    // Alternate searchable column name is configurable (may be INV_REF on the instance).
-    await client.findJournalByInvRef('X', 'INV_REF');
-    expect((captured!.body as Array<{ field: string }>)[0]!.field).toBe('INV_REF');
+    // The column name stays configurable per instance.
+    await client.findJournalByInvRef('X', 'invRef');
+    expect((captured!.body as Array<{ field: string }>)[0]!.field).toBe('invRef');
   });
 
   it('unwraps enveloped search responses and returns [] when nothing matches', async () => {

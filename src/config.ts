@@ -119,8 +119,13 @@ const propertySchema = z
       readback: z
         .object({
           enabled: z.boolean().default(true),
-          /** Searchable column for invRef — camelCase per the API reference; confirm on the instance (may be INV_REF). */
-          invRefField: z.string().default('invRef'),
+          /**
+           * Searchable columns use RAW Sage names even though responses are
+           * camelCase — verified live against the vendor sandbox (API 1.27.5.0).
+           */
+          invRefField: z.string().default('INV_REF'),
+          /** AUDIT_SPLIT link column used to fetch a journal's splits. */
+          splitLinkField: z.string().default('HEADER_NUMBER'),
           /** Also compare AUDIT_SPLIT rows against the ledger during reconciliation. */
           compareSplits: z.boolean().default(true),
         })
@@ -156,6 +161,7 @@ export type RawConfig = z.infer<typeof configSchema>;
 export interface HyperAccountsReadbackConfig {
   enabled: boolean;
   invRefField: string;
+  splitLinkField: string;
   compareSplits: boolean;
 }
 

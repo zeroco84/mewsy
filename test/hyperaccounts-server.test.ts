@@ -57,11 +57,11 @@ describe('HyperAccountsClient against the mock server', () => {
 
     const header = await client.findJournalByInvRef('MEWSY-REV-PROP1-20260701');
     expect(header).toMatchObject({ tranNumber: 90001, headerNumber: 1 });
-    // The likely real Sage column name also works (readback.invRefField).
-    const viaColumn = await client.findJournalByInvRef('MEWSY-REV-PROP1-20260701', 'INV_REF');
-    expect(viaColumn?.tranNumber).toBe(90001);
+    // A wrong (camelCase) column name silently matches nothing — as observed live.
+    const viaCamel = await client.findJournalByInvRef('MEWSY-REV-PROP1-20260701', 'invRef');
+    expect(viaCamel).toBeNull();
 
-    const splits = await client.searchSplits([{ field: 'headerNumber', type: 'eq', value: 1 }]);
+    const splits = await client.searchSplits([{ field: 'HEADER_NUMBER', type: 'eq', value: 1 }]);
     expect(splits.map((s) => s.nominalCode).sort()).toEqual(['1200', '4000', '4001', '4002']);
     expect(await client.findJournalByInvRef('MEWSY-REV-NOPE-20260701')).toBeNull();
   });
@@ -123,7 +123,7 @@ describe('pipeline against the mock server (real HTTP end to end)', () => {
       hyperAccounts: {
         baseUrl: mock.baseUrl,
         authTokenEnv: 'unused',
-        readback: { enabled: true, invRefField: 'invRef', compareSplits: true },
+        readback: { enabled: true, invRefField: 'INV_REF', splitLinkField: 'HEADER_NUMBER', compareSplits: true },
       },
     });
     return {

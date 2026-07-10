@@ -54,7 +54,8 @@
         "authTokenEnv": "HYPERACCOUNTS_TOKEN_PROP1",
         "readback": {
           "enabled": true,
-          "invRefField": "invRef",
+          "invRefField": "INV_REF",
+          "splitLinkField": "HEADER_NUMBER",
           "compareSplits": true
         }
       }

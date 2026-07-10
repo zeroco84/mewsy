@@ -60,12 +60,13 @@ export interface AuditHeader {
   [key: string]: unknown;
 }
 
-/** A row from AUDIT_SPLIT. Loose for the same reason. */
+/** A row from AUDIT_SPLIT. Loose for the same reason. Note: the live API
+ * returns `type` as the string "JD"/"JC", not the integer sent on POST. */
 export interface AuditSplit {
   nominalCode?: string;
   netAmount?: number;
   taxAmount?: number;
-  type?: number;
+  type?: number | string;
   headerNumber?: number | string;
   [key: string]: unknown;
 }
@@ -174,11 +175,11 @@ export class HyperAccountsClient {
   }
 
   /**
-   * Look a journal up by its idempotency key (G3). `field` defaults to the
-   * camelCase response name; the searchable column may differ per instance
-   * (e.g. INV_REF) — configurable via hyperAccounts.readback.invRefField.
+   * Look a journal up by its idempotency key (G3). Searchable columns use
+   * raw Sage names (verified live: INV_REF, not the camelCase response name);
+   * configurable via hyperAccounts.readback.invRefField.
    */
-  async findJournalByInvRef(invRef: string, field = 'invRef'): Promise<AuditHeader | null> {
+  async findJournalByInvRef(invRef: string, field = 'INV_REF'): Promise<AuditHeader | null> {
     const headers = await this.searchAuditHeaders([{ field, type: 'eq', value: invRef }]);
     return headers[0] ?? null;
   }

@@ -46,7 +46,11 @@ const CONFIRM = process.env['HYPERACCOUNTS_LIVE_CONFIRM'] === 'post-test-journal
 const NOMINAL = process.env['HYPERACCOUNTS_LIVE_NOMINAL'] ?? '9999';
 const TAXCODE = Number(process.env['HYPERACCOUNTS_LIVE_TAXCODE'] ?? '9');
 
-const readOnly = Boolean(URL_ && TOKEN);
+// Only run when explicitly invoked (npm run test:live, or MEWSY_LIVE=1 for
+// direct vitest invocation) — a configured .env must not make plain
+// `npm test` hit the vendor's shared sandbox on every run.
+const invoked = process.env['npm_lifecycle_event'] === 'test:live' || process.env['MEWSY_LIVE'] === '1';
+const readOnly = invoked && Boolean(URL_ && TOKEN);
 const posting = readOnly && CONFIRM;
 
 const report: string[] = [];
@@ -107,15 +111,15 @@ describe.skipIf(!posting)('Hyperext sandbox — posting verification (G1/G2/G3/G
   }, 30_000);
 
   it('G3: discovers the searchable invRef column and captures tranNumber', async () => {
-    let header = await client!.findJournalByInvRef(invRef, 'invRef');
-    let field = 'invRef';
+    let header = await client!.findJournalByInvRef(invRef, 'INV_REF');
+    let field = 'INV_REF';
     if (!header) {
-      header = await client!.findJournalByInvRef(invRef, 'INV_REF');
-      field = 'INV_REF';
+      header = await client!.findJournalByInvRef(invRef, 'invRef');
+      field = 'invRef';
     }
-    expect(header, 'journal not findable via invRef nor INV_REF — read-back is load-bearing; investigate before go-live').not.toBeNull();
+    expect(header, 'journal not findable via INV_REF nor invRef — read-back is load-bearing; investigate before go-live').not.toBeNull();
     headerNumber = header!.headerNumber;
-    note(`G3: searchable column is "${field}"${field !== 'invRef' ? ' → set hyperAccounts.readback.invRefField accordingly' : ' (config default is correct)'}`);
+    note(`G3: searchable column is "${field}"${field === 'INV_REF' ? ' (config default is correct)' : ' → set hyperAccounts.readback.invRefField accordingly'}`);
     note(`G3: tranNumber=${header!.tranNumber ?? 'MISSING'} headerNumber=${header!.headerNumber ?? 'MISSING'}`);
     expect(header!.tranNumber).toBeDefined();
   }, 30_000);
@@ -125,9 +129,16 @@ describe.skipIf(!posting)('Hyperext sandbox — posting verification (G1/G2/G3/G
       note('G3: headerNumber missing from header — split comparison will degrade to header-only verification');
       return;
     }
-    const splits = await client!.searchSplits([{ field: 'headerNumber', type: 'eq', value: headerNumber }]);
+    let field = 'HEADER_NUMBER';
+    let splits = await client!.searchSplits([{ field, type: 'eq', value: headerNumber }]);
+    if (splits.length === 0) {
+      field = 'headerNumber';
+      splits = await client!.searchSplits([{ field, type: 'eq', value: headerNumber }]);
+    }
     const usable = splits.filter((s) => typeof s.nominalCode === 'string' && typeof s.netAmount === 'number');
-    note(`G3: searchSplit returned ${splits.length} row(s), ${usable.length} with nominalCode+netAmount — compareSplits ${usable.length === splits.length && splits.length > 0 ? 'VIABLE' : 'will degrade to header-only'}`);
+    note(
+      `G3: searchSplit via "${field}" returned ${splits.length} row(s), ${usable.length} with nominalCode+netAmount — compareSplits ${usable.length === splits.length && splits.length > 0 ? 'VIABLE' : 'will degrade to header-only'}${field !== 'HEADER_NUMBER' && splits.length > 0 ? ' → set hyperAccounts.readback.splitLinkField accordingly' : ''}`,
+    );
   }, 30_000);
 
   it('G2: observes duplicate-invRef behaviour', async () => {
@@ -158,7 +169,7 @@ describe.skipIf(!posting)('Hyperext sandbox — posting verification (G1/G2/G3/G
 });
 
 describe.skipIf(readOnly)('Hyperext sandbox (disabled)', () => {
-  it.skip('set HYPERACCOUNTS_LIVE_URL + HYPERACCOUNTS_LIVE_TOKEN (and HYPERACCOUNTS_LIVE_CONFIRM=post-test-journals for posting checks), then: npm run test:live', () => {});
+  it.skip('run via `npm run test:live` with HYPERACCOUNTS_LIVE_URL + HYPERACCOUNTS_LIVE_TOKEN set (plus HYPERACCOUNTS_LIVE_CONFIRM=post-test-journals for posting checks)', () => {});
 });
 
 afterAll(() => {

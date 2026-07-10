@@ -27,7 +27,7 @@ export function makeProperty(overrides: Partial<PropertyConfig> = {}): PropertyC
     hyperAccounts: {
       baseUrl: 'http://localhost:5000',
       authTokenEnv: 'HA_TOKEN_PROP1',
-      readback: { enabled: true, invRefField: 'invRef', compareSplits: true },
+      readback: { enabled: true, invRefField: 'INV_REF', splitLinkField: 'HEADER_NUMBER', compareSplits: true },
     },
     timezone: 'Europe/Dublin',
     endOfDay: '00:00',
@@ -193,14 +193,14 @@ export class FakeHa {
 
   async searchSplits(filters: SearchFilter[]): Promise<AuditSplit[]> {
     if (this.readback === 'down') throw new Error('audit search unavailable');
-    const headerNumber = Number(filters.find((f) => f.field === 'headerNumber')?.value);
+    const headerNumber = Number(filters.find((f) => f.field === 'HEADER_NUMBER')?.value);
     const journal = this.posted[headerNumber - 1];
     if (!journal) return [];
     return journal.splits.map((s) => ({
       nominalCode: s.nominalCode,
       netAmount: s.netAmount,
       taxAmount: s.taxAmount,
-      type: s.type,
+      type: s.type === 15 ? 'JD' : 'JC', // live API returns strings
       headerNumber,
     }));
   }

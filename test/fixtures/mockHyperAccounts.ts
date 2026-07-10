@@ -195,11 +195,13 @@ export async function startMockHyperAccounts(authToken = 'mock-ha-token'): Promi
     if (url === '/api/search/auditHeaders' && req.method === 'POST') {
       if (state.searchDown) return json(res, 500, { success: false, code: 500, message: 'search unavailable' });
       const filters = (parsed ?? []) as Filter[];
-      // Accept both the camelCase response name and the likely Sage column name.
-      const invRef = filters.find((f) => f.field === 'invRef' || f.field === 'INV_REF')?.value;
+      // Live behaviour (verified on the vendor sandbox): searchable fields use
+      // RAW Sage column names; any other field name silently matches NOTHING.
+      const invRefFilter = filters.find((f) => f.field === 'INV_REF');
+      if (filters.length > 0 && !invRefFilter) return json(res, 200, []);
       const matches = journals
         .map((j, index) => ({ j, headerNumber: index + 1 }))
-        .filter(({ j }) => invRef === undefined || j.invRef === invRef)
+        .filter(({ j }) => invRefFilter === undefined || j.invRef === invRefFilter.value)
         .map(({ j, headerNumber }) => {
           const net = j.splits.filter((s) => s.type === 15).reduce((sum, s) => sum + s.netAmount, 0);
           const tax = j.splits.filter((s) => s.type === 15).reduce((sum, s) => sum + s.taxAmount, 0);
@@ -222,7 +224,9 @@ export async function startMockHyperAccounts(authToken = 'mock-ha-token'): Promi
     if (url === '/api/searchSplit' && req.method === 'POST') {
       if (state.searchDown) return json(res, 500, { success: false, code: 500, message: 'search unavailable' });
       const filters = (parsed ?? []) as Filter[];
-      const headerNumber = Number(filters.find((f) => f.field === 'headerNumber')?.value);
+      const linkFilter = filters.find((f) => f.field === 'HEADER_NUMBER'); // raw column name (verified live)
+      if (!linkFilter) return json(res, 200, []); // unknown fields match nothing
+      const headerNumber = Number(linkFilter.value);
       const journal = journals[headerNumber - 1];
       if (!journal) return json(res, 200, []);
       return json(
@@ -232,7 +236,7 @@ export async function startMockHyperAccounts(authToken = 'mock-ha-token'): Promi
           nominalCode: s.nominalCode,
           netAmount: s.netAmount,
           taxAmount: s.taxAmount,
-          type: s.type,
+          type: s.type === 15 ? 'JD' : 'JC', // live API returns strings, not the posted ints
           headerNumber,
         })),
       );

@@ -73,7 +73,29 @@ describe('buildDayJournal — spec §5 worked example', () => {
 });
 
 describe('buildDayJournal — corrections and edge cases', () => {
-  it('posts a refund day as-is: negative payment flips to a credit split (spec §5 refunds)', () => {
+  it('reads a day as Mews reports it: a negative payment is money received and balances the revenue', () => {
+    const property = makeProperty();
+    const categories = [makeCategory('cat-acc', 'Accommodation', '4000')];
+    const orderItems = [makeItem('cat-acc', 100, 'IE-R1', 13.5)];
+    // The shape payments/getAll returns for a guest paying €113.50.
+    const payments = [
+      {
+        Id: 'pay-mews',
+        AccountingState: 'Closed',
+        ClosedUtc: '2026-07-01T12:00:00Z',
+        Amount: { Currency: 'EUR', NetValue: -113.5, GrossValue: -113.5, TaxValues: [] },
+        Data: { Discriminator: 'CreditCard' },
+      },
+    ];
+    const { journal, blockers, warnings } = buildDayJournal({ property, businessDate: DATE, orderItems, payments, categoriesById: categoriesById(categories) });
+    expect(blockers).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(journal!.lines.find((l) => l.kind === 'PAYMENT')!.netCents).toBe(11350);
+    expect(journal!.lines.some((l) => l.kind === 'SUSPENSE' || l.kind === 'ROUNDING')).toBe(false);
+    expect(journal!.lines.reduce((s, l) => s + l.netCents + l.taxCents, 0)).toBe(0);
+  });
+
+  it('posts a refund day as-is: a refund flips to a credit split (spec §5 refunds)', () => {
     const property = makeProperty();
     const categories = [makeCategory('cat-acc', 'Accommodation', '4000')];
     // Refund day: revenue reversal −100 net and a −113.50 refund payment.

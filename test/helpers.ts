@@ -90,8 +90,13 @@ export function makeItem(
   };
 }
 
-export function makePayment(gross: number, discriminator = 'CreditCard', extra: Partial<MewsPayment> = {}): MewsPayment {
+/**
+ * `received` is money taken from the guest (negative for a refund). Mews reports
+ * a payment received as a negative amount, so the fixture does too.
+ */
+export function makePayment(received: number, discriminator = 'CreditCard', extra: Partial<MewsPayment> = {}): MewsPayment {
   itemCounter++;
+  const gross = received === 0 ? 0 : -received;
   return {
     Id: `pay-${itemCounter}`,
     AccountingState: 'Closed',
@@ -137,7 +142,7 @@ export class FakeMews implements MewsDataSource {
         Id: 'ent-1',
         Name: 'Test Hotel',
         TimeZoneIdentifier: 'Europe/Dublin',
-        EditableHistoryInterval: this.editableHistoryInterval,
+        AccountingEditableHistoryInterval: this.editableHistoryInterval,
       },
     };
   }

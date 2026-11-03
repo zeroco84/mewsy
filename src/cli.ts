@@ -200,7 +200,7 @@ program
           const mews = mewsFactory(ctx.config)(property);
           const delay = await resolvePostingDelay(property, mews);
           const conf = await mews.getConfiguration();
-          console.log(`  ✓ Mews: enterprise "${conf.Enterprise?.Name ?? '?'}", tz ${conf.Enterprise?.TimeZoneIdentifier ?? '?'}, editable window ${conf.Enterprise?.EditableHistoryInterval ?? '(not set)'} → posting delay ${delay.delayDays}d (${delay.source})`);
+          console.log(`  ✓ Mews: enterprise "${conf.Enterprise?.Name ?? '?'}", tz ${conf.Enterprise?.TimeZoneIdentifier ?? '?'}, editable window ${conf.Enterprise?.AccountingEditableHistoryInterval ?? '(not set)'} → posting delay ${delay.delayDays}d (${delay.source})`);
           if (conf.Enterprise?.TimeZoneIdentifier && conf.Enterprise.TimeZoneIdentifier !== property.timezone) {
             console.log(`  ! timezone mismatch: config ${property.timezone} vs Mews ${conf.Enterprise.TimeZoneIdentifier}`);
             problems++;

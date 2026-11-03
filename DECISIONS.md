@@ -177,6 +177,14 @@ A second multi-agent adversarial review over the code added since round one conf
 - **G2 CLOSED** — a duplicate `invRef` is **accepted**: the server provides no idempotency backstop. Mewsy's posting ledger + read-back-before-retry remain the only guard, exactly as designed.
 - **G6 refined** — a 31-char `details` value was **accepted and stored at 31 chars**: the documented max-30 is not server-enforced (at that length). Mewsy keeps its 30-char truncation as the safe contract.
 
+**Mews demo verification (3 Nov 2026).** Run through `MewsClient` against Mews's public demo enterprise (gross pricing, GBP):
+
+- **G9 CLOSED** — `configuration/get`, `accountingCategories/getAll`, and `orderItems/getAll` / `payments/getAll` with `ClosedUtc` + `AccountingStates: ["Closed"]` work as implemented. Every row returned was Closed and inside the window.
+- **G11 CLOSED, with a change** — `EditableHistoryInterval` is deprecated, though still returned. Mewsy now reads `AccountingEditableHistoryInterval`. The real format is `P0M7DT0H0M0S`, which `editableWindowDays` parses.
+- **G14 partly answered** — tenders seen in `Data.Discriminator`: `CreditCard`, `Invoice`, `External`. A real property's list is still needed for `clearing.byTender`.
+- **New finding, fixed: payments are negative.** The Mews docs say a negative amount "represents either rebate or a payment", and the demo agrees: over 14 days, closed order items came to +49,946.16 and closed payments to −49,946.16. `buildDayJournal` had assumed a payment received was positive, which put payments on the same side as revenue and sent twice the day's takings to suspense (or blocked the day under materiality limits). It now flips the sign, and the test fixtures build payments in Mews's sign.
+- **G12 data point** — that 14-day window netted to exactly zero. It's a demo enterprise rather than a deposit-heavy property, so G12 stays open.
+
 **Still open, in sequence order:**
 
 > **Instance verification is automated:** `npm run test:live` empirically answers G1, G2, the G3 column name, G4 and G6 and prints a report. Two valid targets: **Hyperext's free shared sandbox** (provided by support on request — the host in their public docs answers; credentials arrive by email; being shared, run only this suite against it) or your own HyperAccounts install with a test Sage company. The `AuthToken` header name is additionally confirmed by the public Postman collection's auth config (G4). The Irish specifics — VAT3 behaviour (G8) and rate checks — still require your own instance: the shared sandbox is another company's dataset and its Sage VAT return isn't accessible. See README → "Live sandbox verification".
@@ -185,7 +193,7 @@ A second multi-agent adversarial review over the code added since round one conf
 |---|---|---|
 | G8 | VAT-return mechanism spike (`mewsy vat-spike`) — **do this first on our own instance**; a failure forces a posting-path redesign (not answerable on the shared sandbox — no access to its Sage VAT return) | Now |
 | G5 | One HyperAccounts per Sage company? Ask the vendor; not blocking (single property at go-live) | Now |
-| G9/G11/G13/G14 | Mews endpoint/filter/tax-code/tender verification against a demo enterprise | Now |
+| G13/G14 | Accounting Report date bucketing, and the real tender list, on a real property's data | Pre-opening |
 | G12/F5/F10 | Deposits: deferred-revenue + debtors nominals so suspense only holds the unexplained — **decide before Phase 2**; size via deposit-heavy Phase 1 dry-runs | Urgent |
 | D4a | Stand up the Teams Workflows endpoint + external heartbeat monitor | Now |
 | F1–F4, F7–F9, F11 | Finance configuration incl. **re-verified** Irish VAT rates, COA designed together with Mews categories | Pre-opening (Dec 2026 → Feb 2027) |

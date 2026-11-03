@@ -22,7 +22,7 @@ export interface MewsEnterprise {
   Name?: string;
   TimeZoneIdentifier?: string;
   /** ISO 8601 duration, e.g. "P1D" — the accounting editable-history window. */
-  EditableHistoryInterval?: string;
+  AccountingEditableHistoryInterval?: string;
   DefaultLanguageCode?: string;
 }
 
@@ -57,6 +57,7 @@ export interface MewsOrderItem {
 export interface MewsPayment {
   Id: string;
   AccountingCategoryId?: string | null;
+  /** Negative for a payment received, positive for a refund. */
   Amount: MewsAmount;
   AccountingState: string;
   State?: string | null;

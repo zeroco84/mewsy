@@ -51,7 +51,7 @@ const settingsShape = {
     }, 'endOfDay must be "HH:mm"'),
   /**
    * Full posting delay in days (editable-history window + 1). null → derive
-   * from the Mews EditableHistoryInterval at runtime (spec §6).
+   * from the Mews AccountingEditableHistoryInterval at runtime (spec §6).
    */
   postingDelayDays: z.number().int().min(1).max(60).nullable().default(null),
   /** Safety valve on catch-up after downtime. */

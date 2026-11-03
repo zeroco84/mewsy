@@ -85,15 +85,15 @@ export async function resolvePostingDelay(
     return { delayDays: property.postingDelayDays, source: 'config override' };
   }
   const conf = await mews.getConfiguration();
-  const interval = conf.Enterprise?.EditableHistoryInterval;
+  const interval = conf.Enterprise?.AccountingEditableHistoryInterval;
   if (!interval) {
     throw new Error(
-      `Mews configuration for ${property.code} has no EditableHistoryInterval — set postingDelayDays in config or confirm the Mews setting (spec §6)`,
+      `Mews configuration for ${property.code} has no AccountingEditableHistoryInterval — set postingDelayDays in config or confirm the Mews setting (spec §6)`,
     );
   }
   return {
     delayDays: editableWindowDays(interval) + 1,
-    source: `Mews EditableHistoryInterval ${interval} + 1`,
+    source: `Mews AccountingEditableHistoryInterval ${interval} + 1`,
     mewsTimezone: conf.Enterprise?.TimeZoneIdentifier,
   };
 }

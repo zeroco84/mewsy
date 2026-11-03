@@ -250,7 +250,9 @@ export function buildDayJournal(input: {
     }
     let amountCents: number;
     try {
-      amountCents = centsFromDecimal(payment.Amount.GrossValue, label);
+      // Mews reports a payment received as a negative amount and a refund as a
+      // positive one, so flip to this file's convention (debit positive).
+      amountCents = nz(-centsFromDecimal(payment.Amount.GrossValue, label));
     } catch (err) {
       blockers.push(String(err));
       continue;
@@ -279,8 +281,8 @@ export function buildDayJournal(input: {
       continue;
     }
 
-    // Payment received = debit (positive). Mews reports refunds as negative
-    // payment amounts, which flow through as negative debits (i.e. credits).
+    // Payment received = debit (positive); a refund flows through as a
+    // negative debit (i.e. a credit).
     add(
       {
         nominalCode: nominal,
